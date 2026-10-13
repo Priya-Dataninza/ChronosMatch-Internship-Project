@@ -16,6 +16,11 @@ class Order:
 
 async def generate_orders(total_orders: int = 10, delay: float = 0.5):
     """Generate simulated market orders asynchronously."""
+    if total_orders < 0:
+        raise ValueError("total_orders cannot be negative")
+
+    if delay < 0:
+        raise ValueError("delay cannot be negative")
 
     for order_id in range(1, total_orders + 1):
         order = Order(
@@ -35,7 +40,9 @@ async def generate_orders(total_orders: int = 10, delay: float = 0.5):
         )
 
         yield order
-        await asyncio.sleep(delay)
+
+        if order_id < total_orders:
+            await asyncio.sleep(delay)
 
 
 async def main():
