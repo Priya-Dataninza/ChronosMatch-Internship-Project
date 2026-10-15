@@ -1,29 +1,46 @@
 # engine_core.py
 import time
-from order_format import get_mmap_instance, ORDER_FORMAT
+from order_format import (
+    get_mmap_instance, HEADER_FORMAT, HEADER_SIZE, 
+    ORDER_FORMAT, ORDER_SIZE, MAX_ORDERS
+)
 
-file_handle, shared_memory = get_mmap_instance(mode="rb")
+file_handle, shared_memory = get_mmap_instance(mode="r+b")
 
-def match_loop():
-    print("ChronosMatch Core Engine Active. Polling memory...")
-    current_slot = 0
+def run_engine():
+    print("[ENGINE] ChronosMatch Core Online. Actively scanning memory matrix...\n")
     
     while True:
-        offset = current_slot * ORDER_FORMAT.size
-        binary_chunk = shared_memory[offset:offset + ORDER_FORMAT.size]
+        write_ptr, read_ptr = HEADER_FORMAT.unpack(shared_memory[0:HEADER_SIZE])
         
-        # Check if the slot is populated (Not all zeros)
-        if binary_chunk != b'\x00' * ORDER_FORMAT.size:
+        if write_ptr > read_ptr:
+            slot_index = read_ptr % MAX_ORDERS
+            offset = HEADER_SIZE + (slot_index * ORDER_SIZE)
+            
+            binary_chunk = shared_memory[offset:offset + ORDER_SIZE]
+            
+            if binary_chunk == b'\x00' * ORDER_SIZE:
+                new_read_ptr = read_ptr + 1
+                shared_memory[0:HEADER_SIZE] = HEADER_FORMAT.pack(write_ptr, new_read_ptr)
+                continue
+                
             order_id, price, qty = ORDER_FORMAT.unpack(binary_chunk)
+            print(f"[ENGINE] Parsed Slot [{slot_index}] -> ID: {order_id} | Price: ₹{price/100:.2f} | Qty: {qty}")
             
-            print(f"[MATCH ENGINE] Processing Order ID: {order_id} | Price: {price/100} | Qty: {qty}")
-            
-            # --- YOUR MATCHING LOGIC GOES HERE (Orderbook cross) ---
-            
-            current_slot += 1  # Move to expect the next order chunk
+            # Wipe slot clean and update engine tracking pointers
+            shared_memory[offset:offset + ORDER_SIZE] = b'\x00' * ORDER_SIZE
+            new_read_ptr = read_ptr + 1
+            shared_memory[0:HEADER_SIZE] = HEADER_FORMAT.pack(write_ptr, new_read_ptr)
+            shared_memory.flush()
         else:
-            # Busy-wait or slight sleep if no new data has been written yet
-            time.sleep(0.001) 
+            break
+            time.sleep(0.0001)
 
 if __name__ == "__main__":
-    match_loop()
+    try:
+        run_engine()
+    except KeyboardInterrupt:
+        print("\n[ENGINE] Shutting down cleanly.")
+    finally:
+        shared_memory.close()
+        file_handle.close()
