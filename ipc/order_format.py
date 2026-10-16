@@ -6,7 +6,10 @@ import os
 HEADER_FORMAT = struct.Struct("<QQ") 
 HEADER_SIZE = HEADER_FORMAT.size
 
-ORDER_FORMAT = struct.Struct("<III")
+# --- CHANGE IS HERE: Added one extra 'I' for the side (Buy/Sell) ---
+# Old: "<III" (order_id, price, quantity)
+# New: "<IIII" (order_id, price, quantity, side)
+ORDER_FORMAT = struct.Struct("<IIII")
 ORDER_SIZE = ORDER_FORMAT.size
 
 MAX_ORDERS = 100000  
@@ -17,6 +20,8 @@ def init_ring_buffer():
     if not os.path.exists(FILE_NAME):
         with open(FILE_NAME, "wb") as f:
             f.truncate(FILE_SIZE)
+            # Pre-pack empty head and tail
+            f.seek(0)
             f.write(HEADER_FORMAT.pack(0, 0))
         print(f"[SYSTEM] Ring buffer file initialized.")
 
@@ -24,7 +29,6 @@ def get_mmap_instance(mode="r+b"):
     f = open(FILE_NAME, mode)
     is_write = "w" in mode or "+" in mode
     
-    # 'tagname' creates a named kernel shared memory segment on Windows for instant IPC
     mem = mmap.mmap(
         f.fileno(), 
         FILE_SIZE, 
