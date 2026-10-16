@@ -54,7 +54,6 @@ class TestMarketSimulator(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(orders, [])
 
-
     async def test_negative_total_orders_raises_error(self):
         with self.assertRaises(ValueError):
             async for _ in generate_orders(total_orders=-1):
@@ -64,6 +63,7 @@ class TestMarketSimulator(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             async for _ in generate_orders(delay=-0.5):
                 pass
+
 
 if __name__ == "__main__":
     unittest.main()
