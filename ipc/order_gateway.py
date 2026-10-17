@@ -10,7 +10,13 @@ file_handle, shared_memory = get_mmap_instance(mode="r+b")
 
 # --- UPDATED: Added side: int parameter ---
 def produce_order(order_id: int, price: int, quantity: int, side: int) -> bool:
+
+    if price <= 0 or quantity <= 0:
+            print(f"[REJECTED] Invalid Order #{order_id}: Price and Quantity must be greater than 0.")
+            return False
+    
     write_ptr, read_ptr = HEADER_FORMAT.unpack(shared_memory[0:HEADER_SIZE])
+    
     
     if write_ptr - read_ptr >= MAX_ORDERS:
         print("[CRITICAL] Buffer Overflow!")
