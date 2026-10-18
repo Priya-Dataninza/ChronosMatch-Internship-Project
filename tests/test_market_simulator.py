@@ -1,7 +1,12 @@
 
+import asyncio
 import unittest
 
-from src.market_simulator import generate_orders
+from src.market_simulator import (
+    Order,
+    convert_order_for_gateway,
+    generate_orders,
+)
 
 
 class TestMarketSimulator(unittest.TestCase):
@@ -17,8 +22,11 @@ class TestMarketSimulator(unittest.TestCase):
                 orders.append(order)
 
             self.assertEqual(len(orders), 3)
+            self.assertEqual(
+                [order.order_id for order in orders],
+                [1, 2, 3],
+            )
 
-        import asyncio
         asyncio.run(run_test())
 
     def test_negative_delay_raises_error(self):
@@ -30,7 +38,6 @@ class TestMarketSimulator(unittest.TestCase):
                 ):
                     pass
 
-        import asyncio
         asyncio.run(run_test())
 
     def test_negative_total_orders_raises_error(self):
@@ -42,7 +49,6 @@ class TestMarketSimulator(unittest.TestCase):
                 ):
                     pass
 
-        import asyncio
         asyncio.run(run_test())
 
     def test_orders_have_valid_values(self):
@@ -63,7 +69,6 @@ class TestMarketSimulator(unittest.TestCase):
                 self.assertLessEqual(order.quantity, 100)
                 self.assertGreater(order.timestamp_ns, 0)
 
-        import asyncio
         asyncio.run(run_test())
 
     def test_zero_orders(self):
@@ -76,10 +81,35 @@ class TestMarketSimulator(unittest.TestCase):
             ):
                 orders.append(order)
 
-            self.assertEqual(len(orders), 0)
+            self.assertEqual(orders, [])
 
-        import asyncio
         asyncio.run(run_test())
+
+    def test_converts_buy_order_for_gateway(self):
+        order = Order(
+            order_id=1,
+            side="BUY",
+            price=99.75,
+            quantity=5,
+            timestamp_ns=123,
+        )
+
+        result = convert_order_for_gateway(order)
+
+        self.assertEqual(result, (1, 9975, 5, 1))
+
+    def test_converts_sell_order_for_gateway(self):
+        order = Order(
+            order_id=2,
+            side="SELL",
+            price=90.80,
+            quantity=10,
+            timestamp_ns=456,
+        )
+
+        result = convert_order_for_gateway(order)
+
+        self.assertEqual(result, (2, 9080, 10, 2))
 
 
 if __name__ == "__main__":
