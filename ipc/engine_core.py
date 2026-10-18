@@ -9,7 +9,9 @@ file_handle, shared_memory = get_mmap_instance(mode="r+b")
 
 def run_engine():
     print("[ENGINE] ChronosMatch Core Online. Actively scanning memory matrix...\n")
-    
+
+    last_processed_id = -1
+
     while True:
         write_ptr, read_ptr = HEADER_FORMAT.unpack(shared_memory[0:HEADER_SIZE])
         
@@ -26,6 +28,16 @@ def run_engine():
             
             # --- UPDATED: Unpacks 4 values now (added side) ---
             order_id, price, qty, side = ORDER_FORMAT.unpack(binary_chunk)
+
+            # --- CORRECTION: Check if this order was already processed ---
+            if order_id <= last_processed_id:
+                shared_memory[offset:offset + ORDER_SIZE] = b'\x00' * ORDER_SIZE
+                new_read_ptr = read_ptr + 1
+                shared_memory[0:HEADER_SIZE] = HEADER_FORMAT.pack(write_ptr, new_read_ptr)
+                shared_memory.flush()
+                continue
+
+            last_processed_id = order_id
             
             # --- UPDATED: Human-readable Side label ---
             side_label = "BUY" if side == 1 else "SELL"
