@@ -1,11 +1,14 @@
 
 import asyncio
 import unittest
+from types import ModuleType
+from unittest.mock import Mock, patch
 
 from src.market_simulator import (
     Order,
     convert_order_for_gateway,
     generate_orders,
+    send_order_to_gateway,
 )
 
 
@@ -110,6 +113,66 @@ class TestMarketSimulator(unittest.TestCase):
         result = convert_order_for_gateway(order)
 
         self.assertEqual(result, (2, 9080, 10, 2))
+
+    def test_send_order_to_gateway_passes_converted_fields(self):
+        order = Order(
+            order_id=7,
+            side="BUY",
+            price=99.75,
+            quantity=5,
+            timestamp_ns=123,
+        )
+
+        gateway = ModuleType("order_gateway")
+        gateway.produce_order = Mock(return_value=True)
+
+        with patch.dict("sys.modules", {"order_gateway": gateway}):
+            result = send_order_to_gateway(order)
+
+        self.assertTrue(result)
+        gateway.produce_order.assert_called_once_with(
+            7, 9975, 5, 1
+        )
+
+    def test_send_order_to_gateway_returns_rejection(self):
+        order = Order(
+            order_id=8,
+            side="SELL",
+            price=101.25,
+            quantity=3,
+            timestamp_ns=456,
+        )
+
+        gateway = ModuleType("order_gateway")
+        gateway.produce_order = Mock(return_value=False)
+
+        with patch.dict("sys.modules", {"order_gateway": gateway}):
+            result = send_order_to_gateway(order)
+
+        self.assertFalse(result)
+        gateway.produce_order.assert_called_once_with(
+            8, 10125, 3, 2
+        )
+
+    def test_send_order_to_gateway_propagates_gateway_error(self):
+        order = Order(
+            order_id=9,
+            side="BUY",
+            price=100.00,
+            quantity=2,
+            timestamp_ns=789,
+        )
+
+        gateway = ModuleType("order_gateway")
+        gateway.produce_order = Mock(
+            side_effect=OSError("Gateway unavailable")
+        )
+
+        with patch.dict("sys.modules", {"order_gateway": gateway}):
+            with self.assertRaisesRegex(
+                OSError, "Gateway unavailable"
+            ):
+                send_order_to_gateway(order)
 
 
 if __name__ == "__main__":
