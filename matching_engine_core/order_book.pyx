@@ -33,6 +33,7 @@ cdef struct PriceLevel:
 cdef struct OrderBook:
     PriceLevel* best_bid
     PriceLevel* best_ask
+    uint64_t total_orders_processed  # Small addition to track engine throughput
 
 # Internal helper to create a new order node in memory
 cdef inline Order* create_order(uint64_t order_id, uint32_t price, uint32_t qty, uint8_t side) noexcept nogil:
@@ -53,6 +54,9 @@ cdef void match_order(OrderBook* book, uint64_t order_id, uint32_t price, uint32
     cdef PriceLevel* current_level = NULL
     cdef Order* resting_ord = NULL
     cdef uint32_t match_qty = 0
+
+    # Increment metric safely without the GIL
+    book.total_orders_processed += 1
 
     if side == BUY:
         current_level = book.best_ask
@@ -127,6 +131,7 @@ cdef class PyOrderBook:
         self._book = <OrderBook*>malloc(sizeof(OrderBook))
         self._book.best_bid = NULL
         self._book.best_ask = NULL
+        self._book.total_orders_processed = 0
         
     def __dealloc__(self):
         if self._book != NULL:
@@ -135,3 +140,8 @@ cdef class PyOrderBook:
     def process_incoming(self, uint64_t order_id, uint32_t price, uint32_t qty, uint8_t side):
         with nogil:
             match_order(self._book, order_id, price, qty, side)
+
+    # Exposed property to check metrics from Python code later
+    @property
+    def metrics(self):
+        return {"total_processed": self._book.total_orders_processed}
