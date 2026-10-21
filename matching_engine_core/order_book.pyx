@@ -136,9 +136,11 @@ cdef class PyOrderBook:
     def __dealloc__(self):
         if self._book != NULL:
             free(self._book)
+    from libc.stdio cimport printf
 
     def process_incoming(self, uint64_t order_id, uint32_t price, uint32_t qty, uint8_t side):
         with nogil:
+            printf("Processing order %lu\n", order_id)
             match_order(self._book, order_id, price, qty, side)
 
     # Exposed property to check metrics from Python code later
