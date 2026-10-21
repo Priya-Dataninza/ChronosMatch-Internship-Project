@@ -15,7 +15,7 @@ class FakeSharedMemory(bytearray):
 class TestOrderGateway(unittest.TestCase):
 
     def setUp(self):
-        # Build an isolated ring buffer for testing.
+        # Create an isolated ring buffer for testing.
         header_format = struct.Struct("<QQ")
         order_format = struct.Struct("<IIII")
         max_orders = 4
@@ -36,11 +36,14 @@ class TestOrderGateway(unittest.TestCase):
             return_value=(self.file_handle, self.memory)
         )
 
-        # Import the gateway with mocked dependencies so the real
-        # shared.bin file is never opened or modified.
+        # Import the gateway with mocked dependencies.
+        # This prevents tests from modifying the real shared.bin.
         sys.modules.pop("order_gateway", None)
 
-        with patch.dict(sys.modules, {"order_format": fake_format}):
+        with patch.dict(
+            sys.modules,
+            {"order_format": fake_format},
+        ):
             self.gateway = importlib.import_module("order_gateway")
 
     def tearDown(self):
@@ -60,7 +63,7 @@ class TestOrderGateway(unittest.TestCase):
     def test_invalid_side_does_not_advance_write_pointer(self):
         header_format = self.gateway.HEADER_FORMAT
 
-        # Start with write pointer 5 and read pointer 2.
+        # Set write pointer to 5 and read pointer to 2.
         self.memory[:self.gateway.HEADER_SIZE] = (
             header_format.pack(5, 2)
         )
@@ -70,6 +73,38 @@ class TestOrderGateway(unittest.TestCase):
             price=10000,
             quantity=5,
             side=3,
+        )
+
+        write_ptr, read_ptr = header_format.unpack(
+            self.memory[:self.gateway.HEADER_SIZE]
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(write_ptr, 5)
+        self.assertEqual(read_ptr, 2)
+
+    def test_rejects_negative_order_id(self):
+        result = self.gateway.produce_order(
+            order_id=-1,
+            price=10000,
+            quantity=5,
+            side=1,
+        )
+
+        self.assertFalse(result)
+
+    def test_negative_order_id_does_not_advance_write_pointer(self):
+        header_format = self.gateway.HEADER_FORMAT
+
+        self.memory[:self.gateway.HEADER_SIZE] = (
+            header_format.pack(5, 2)
+        )
+
+        result = self.gateway.produce_order(
+            order_id=-1,
+            price=10000,
+            quantity=5,
+            side=1,
         )
 
         write_ptr, read_ptr = header_format.unpack(
