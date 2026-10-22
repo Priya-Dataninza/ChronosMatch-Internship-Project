@@ -5,6 +5,7 @@ from order_format import (
     HEADER_SIZE, ORDER_FORMAT, ORDER_SIZE, MAX_ORDERS
 )
 
+
 init_ring_buffer()
 file_handle, shared_memory = get_mmap_instance(mode="r+b")
 

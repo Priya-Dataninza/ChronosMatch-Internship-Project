@@ -6,9 +6,8 @@ import os
 HEADER_FORMAT = struct.Struct("<QQ") 
 HEADER_SIZE = HEADER_FORMAT.size
 
-# --- CHANGE IS HERE: Added one extra 'I' for the side (Buy/Sell) ---
-# Old: "<III" (order_id, price, quantity)
-# New: "<IIII" (order_id, price, quantity, side)
+
+#"<IIII" (order_id, price, quantity, side)
 ORDER_FORMAT = struct.Struct("<IIII")
 ORDER_SIZE = ORDER_FORMAT.size
 
