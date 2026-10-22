@@ -20,19 +20,27 @@ def produce_order(
     quantity: int,
     side: int,
 ) -> bool:
-    # Validate order ID before packing unsigned integers.
-    if order_id < 0:
+    # Validate unsigned 32-bit integer limits.
+    max_value = (1 << 32) - 1
+
+    if not 0 <= order_id <= max_value:
         print(
             f"[REJECTED] Invalid Order #{order_id}: "
-            "Order ID must be non-negative."
+            "Order ID must be between 0 and 4294967295."
         )
         return False
 
-    # Validate price and quantity.
-    if price <= 0 or quantity <= 0:
+    if not 1 <= price <= max_value:
         print(
             f"[REJECTED] Invalid Order #{order_id}: "
-            "Price and Quantity must be greater than 0."
+            "Price must be between 1 and 4294967295."
+        )
+        return False
+
+    if not 1 <= quantity <= max_value:
+        print(
+            f"[REJECTED] Invalid Order #{order_id}: "
+            "Quantity must be between 1 and 4294967295."
         )
         return False
 
@@ -78,7 +86,9 @@ def produce_order(
 
 
 if __name__ == "__main__":
-    print("[GATEWAY] Active. Enter orders manually to test real-time pipeline.")
+    print(
+        "[GATEWAY] Active. Enter orders manually to test real-time pipeline."
+    )
     print(
         "Format: order_id price quantity side "
         "(e.g., 101 15000 5 1 for BUY or 102 15050 10 2 for SELL)."
@@ -96,7 +106,7 @@ if __name__ == "__main__":
                 oid, prc, qty, side = map(int, user_input.split())
 
                 if side not in (1, 2):
-                    print("Invalid side! Use 1 for BUY, 2 for SELL.")
+                    print("Invalid side! Use 1 for BUY or 2 for SELL.")
                     continue
 
                 if produce_order(oid, prc, qty, side):

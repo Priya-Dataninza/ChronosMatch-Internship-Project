@@ -36,8 +36,7 @@ class TestOrderGateway(unittest.TestCase):
             return_value=(self.file_handle, self.memory)
         )
 
-        # Import the gateway with mocked dependencies.
-        # This prevents tests from modifying the real shared.bin.
+        # Prevent tests from modifying the real shared.bin file.
         sys.modules.pop("order_gateway", None)
 
         with patch.dict(
@@ -114,6 +113,60 @@ class TestOrderGateway(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(write_ptr, 5)
         self.assertEqual(read_ptr, 2)
+
+    def test_rejects_numeric_fields_above_uint32_limit(self):
+        max_value = (1 << 32) - 1
+
+        invalid_orders = [
+            {
+                "order_id": max_value + 1,
+                "price": 100,
+                "quantity": 1,
+                "side": 1,
+            },
+            {
+                "order_id": 1,
+                "price": max_value + 1,
+                "quantity": 1,
+                "side": 1,
+            },
+            {
+                "order_id": 1,
+                "price": 100,
+                "quantity": max_value + 1,
+                "side": 1,
+            },
+        ]
+
+        for order in invalid_orders:
+            with self.subTest(order=order):
+                result = self.gateway.produce_order(**order)
+                self.assertFalse(result)
+
+    def test_accepts_uint32_boundary_values(self):
+        max_value = (1 << 32) - 1
+
+        result = self.gateway.produce_order(
+            order_id=max_value,
+            price=max_value,
+            quantity=max_value,
+            side=2,
+        )
+
+        self.assertTrue(result)
+
+        # Verify that the maximum values were packed correctly.
+        order_offset = self.gateway.HEADER_SIZE
+        stored_order = self.gateway.ORDER_FORMAT.unpack(
+            self.memory[
+                order_offset:order_offset + self.gateway.ORDER_SIZE
+            ]
+        )
+
+        self.assertEqual(
+            stored_order,
+            (max_value, max_value, max_value, 2),
+        )
 
 
 if __name__ == "__main__":
