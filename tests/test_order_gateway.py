@@ -168,6 +168,50 @@ class TestOrderGateway(unittest.TestCase):
             (max_value, max_value, max_value, 2),
         )
 
+    def test_invalid_price_does_not_advance_write_pointer(self):
+        header_format = self.gateway.HEADER_FORMAT
+
+        self.memory[:self.gateway.HEADER_SIZE] = (
+            header_format.pack(5, 2)
+        )
+
+        result = self.gateway.produce_order(
+            order_id=10,
+            price=0,
+            quantity=5,
+            side=1,
+        )
+
+        write_ptr, read_ptr = header_format.unpack(
+            self.memory[:self.gateway.HEADER_SIZE]
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(write_ptr, 5)
+        self.assertEqual(read_ptr, 2)
+
+    def test_invalid_quantity_does_not_advance_write_pointer(self):
+        header_format = self.gateway.HEADER_FORMAT
+
+        self.memory[:self.gateway.HEADER_SIZE] = (
+            header_format.pack(5, 2)
+        )
+
+        result = self.gateway.produce_order(
+            order_id=10,
+            price=10000,
+            quantity=0,
+            side=1,
+        )
+
+        write_ptr, read_ptr = header_format.unpack(
+            self.memory[:self.gateway.HEADER_SIZE]
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(write_ptr, 5)
+        self.assertEqual(read_ptr, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
