@@ -263,9 +263,40 @@ cdef class PyOrderBook:
 
     def process_incoming(self, uint64_t order_id, uint32_t price, uint32_t qty, uint8_t side):
         with nogil:
-            printf("Processing order %lu\n", order_id)
             match_order(self._book, order_id, price, qty, side)
 
     @property
     def metrics(self):
         return {"total_processed": self._book.total_orders_processed}
+    
+    def get_book_state(self):
+        cdef PriceLevel* level
+        cdef Order* order
+        bids = []
+        asks = []
+
+        level = self._book.best_bid
+        while level != NULL:
+            order = level.head
+            while order != NULL:
+                bids.append({
+                    "order_id": order.order_id,
+                    "price": level.price,
+                    "quantity": order.qty
+                })
+                order = order.next
+            level = level.next
+
+        level = self._book.best_ask
+        while level != NULL:
+            order = level.head
+            while order != NULL:
+                asks.append({
+                    "order_id": order.order_id,
+                    "price": level.price,
+                    "quantity": order.qty
+                })
+                order = order.next
+            level = level.next
+
+        return {"bids": bids, "asks": asks}

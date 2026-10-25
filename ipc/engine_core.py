@@ -1,63 +1,99 @@
-# engine_core.py
+
 import time
-from order_format import (
-    get_mmap_instance, HEADER_FORMAT, HEADER_SIZE, 
-    ORDER_FORMAT, ORDER_SIZE, MAX_ORDERS
+
+
+
+from ipc.shared_buffer import (
+    init_ring_buffer,
+    get_mmap_instance,
+    buffer_lock,
+    HEADER_FORMAT,
+    HEADER_SIZE,
+    ORDER_FORMAT,
+    ORDER_SIZE,
+    MAX_ORDERS,
 )
 
-file_handle, shared_memory = get_mmap_instance(mode="r+b")
+
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    
+from matching_engine_core.order_book import PyOrderBook
+
+init_ring_buffer()
+file_handle, shared_memory = get_mmap_instance()
+
 
 def run_engine():
-    print("[ENGINE] ChronosMatch Core Online. Actively scanning memory matrix...\n")
+    print("[ENGINE] ChronosMatch core online.")
 
-    last_processed_id = -1
+    order_book = PyOrderBook()
+    processed = 0
+    log_each_order = True  # Set False for throughput testing.
 
-    while True:
-        write_ptr, read_ptr = HEADER_FORMAT.unpack(shared_memory[0:HEADER_SIZE])
-        
-        if write_ptr > read_ptr:
-            slot_index = read_ptr % MAX_ORDERS
-            offset = HEADER_SIZE + (slot_index * ORDER_SIZE)
-            
-            binary_chunk = shared_memory[offset:offset + ORDER_SIZE]
-            
-            if binary_chunk == b'\x00' * ORDER_SIZE:
-                new_read_ptr = read_ptr + 1
-                shared_memory[0:HEADER_SIZE] = HEADER_FORMAT.pack(write_ptr, new_read_ptr)
-                continue
-            
-            # --- UPDATED: Unpacks 4 values now (added side) ---
-            order_id, price, qty, side = ORDER_FORMAT.unpack(binary_chunk)
+    try:
+        while True:
+            with buffer_lock(file_handle):
+                write_ptr, read_ptr = HEADER_FORMAT.unpack_from(
+                    shared_memory, 0
+                )
 
-            # --- CORRECTION: Check if this order was already processed ---
-            if order_id <= last_processed_id:
-                shared_memory[offset:offset + ORDER_SIZE] = b'\x00' * ORDER_SIZE
-                new_read_ptr = read_ptr + 1
-                shared_memory[0:HEADER_SIZE] = HEADER_FORMAT.pack(write_ptr, new_read_ptr)
-                shared_memory.flush()
-                continue
+                if read_ptr >= write_ptr:
+                    order = None
+                else:
+                    slot_index = read_ptr % MAX_ORDERS
+                    offset = HEADER_SIZE + slot_index * ORDER_SIZE
 
-            last_processed_id = order_id
-            
-            # --- UPDATED: Human-readable Side label ---
-            side_label = "BUY" if side == 1 else "SELL"
-            print(f"[ENGINE] Parsed Slot [{slot_index}] -> ID: {order_id} | {side_label} | Price: ₹{price/100:.2f} | Qty: {qty}")
-            
-            # Wipe slot clean and update engine tracking pointers
-            shared_memory[offset:offset + ORDER_SIZE] = b'\x00' * ORDER_SIZE
-            new_read_ptr = read_ptr + 1
-            shared_memory[0:HEADER_SIZE] = HEADER_FORMAT.pack(write_ptr, new_read_ptr)
-            shared_memory.flush()
-        else:
-            # --- FIXED BUG: Changed 'break' to 'continue' so the engine stays alive waiting for data ---
-            time.sleep(0.0001)
-            continue
+                    order = ORDER_FORMAT.unpack_from(
+                        shared_memory, offset
+                    )
+
+                    order_id, price, qty, side = order
+
+                    if side not in (1, 2) or price == 0 or qty == 0:
+                        print(
+                            f"[ENGINE] Invalid record at slot {slot_index}; "
+                            "discarding it."
+                        )
+                    else:
+                        # Process before freeing the slot.
+                        order_book.process_incoming(
+                            order_id, price, qty, side
+                        )
+                        processed += 1
+
+                        if log_each_order:
+                            label = "BUY" if side == 1 else "SELL"
+                            print(
+                                f"[ENGINE] ID={order_id} "
+                                f"{label} price={price} qty={qty}"
+                            )
+
+                    # Consume this logical position exactly once
+                    # under the shared lock.
+                    HEADER_FORMAT.pack_into(
+                        shared_memory, 0,
+                        write_ptr, read_ptr + 1
+                    )
+
+            if order is None:
+                time.sleep(0.0001)
+
+    except KeyboardInterrupt:
+        print("\n[ENGINE] Shutting down.")
+
+    finally:
+        print(f"[ENGINE] Orders processed: {processed}")
+        print(f"[ENGINE] Metrics: {order_book.metrics}")
+
 
 if __name__ == "__main__":
     try:
         run_engine()
-    except KeyboardInterrupt:
-        print("\n[ENGINE] Shutting down cleanly.")
     finally:
         shared_memory.close()
         file_handle.close()
