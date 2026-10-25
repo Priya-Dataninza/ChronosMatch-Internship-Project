@@ -30,3 +30,5 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+#Database files 
+*.db
