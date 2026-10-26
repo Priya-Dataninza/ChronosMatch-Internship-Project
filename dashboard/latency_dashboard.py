@@ -1,13 +1,4 @@
-"""
-ChronosMatch - Latency Dashboard + SQLite Ledger (Member 4)
-NOTE: trades and best bid/ask are FAKE for now.
-TODO: replace fake_trade() with real trades from the engine.
-Runs with FAKE trades now. Later, replace fake_trade() with real
-trades read from the shared mmap ring buffer.
 
-Windows: pip install windows-curses
-Run:     python dashboard/latency_dashboard.py     (press q to quit)
-"""
 import curses
 import queue
 import random
