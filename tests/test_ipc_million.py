@@ -93,7 +93,7 @@ def consumer_worker(total_orders, result_queue):
         MAX_ORDERS,
     )
 
-    from matching_engine_core.order_book import PyOrderBook
+    from matching_engine_core.order_book_fallback import PyOrderBook
 
     init_ring_buffer()
     file_handle, mem = get_mmap_instance()

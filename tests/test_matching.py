@@ -6,7 +6,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
     
-from matching_engine_core.order_book import PyOrderBook
+from matching_engine_core.order_book_fallback import PyOrderBook
 
 book = PyOrderBook()
 
