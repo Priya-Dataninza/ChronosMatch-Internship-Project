@@ -7,6 +7,7 @@
 from libc.stdlib cimport malloc, free
 from libc.stdint cimport uint64_t, uint32_t, uint8_t
 from libc.stdio cimport printf
+from time import perf_counter_ns
 
 # 1 = BUY, 2 = SELL
 cdef enum Side:
@@ -220,6 +221,12 @@ cdef void match_order(OrderBook* book, uint64_t order_id, uint32_t price, uint32
 # Python Extension Class Wrapper
 cdef class PyOrderBook:
     cdef OrderBook* _book
+    cdef uint64_t _last_start_ns
+    cdef uint64_t _last_end_ns
+    cdef uint64_t _last_latency_ns
+    cdef uint64_t _total_latency_ns
+    cdef uint64_t _max_latency_ns
+    cdef uint64_t _latency_samples
     
     def __cinit__(self):
         self._book = <OrderBook*>malloc(sizeof(OrderBook))
@@ -228,6 +235,13 @@ cdef class PyOrderBook:
             self._book.best_bid = NULL
             self._book.best_ask = NULL
             self._book.total_orders_processed = 0
+
+            self._last_start_ns = 0
+            self._last_end_ns = 0
+            self._last_latency_ns = 0
+            self._total_latency_ns = 0
+            self._max_latency_ns = 0
+            self._latency_samples = 0
         
     def __dealloc__(self):
         cdef PriceLevel* curr_level
@@ -261,20 +275,61 @@ cdef class PyOrderBook:
                 curr_level = next_level
 
             free(self._book)
-
-    def process_incoming(self, uint64_t order_id, uint32_t price, uint32_t qty, uint8_t side):
+    def process_incoming(
+        self,
+        uint64_t order_id,
+        uint32_t price,
+        uint32_t qty,
+        uint8_t side
+    ):
         if side not in (BUY, SELL):
             raise ValueError("side must be BUY (1) or SELL (2)")
 
-        if price <= 0 or qty <= 0:
+        if price == 0 or qty == 0:
             raise ValueError("price and quantity must be positive")
 
+        self._last_start_ns = perf_counter_ns()
+
         with nogil:
-            match_order(self._book, order_id, price, qty, side)
+            match_order(
+                self._book,
+                order_id,
+                price,
+                qty,
+                side
+            )
+
+        self._last_end_ns = perf_counter_ns()
+
+        self._last_latency_ns = (
+            self._last_end_ns - self._last_start_ns
+        )
+
+        self._total_latency_ns += self._last_latency_ns
+        self._latency_samples += 1
+
+        if self._last_latency_ns > self._max_latency_ns:
+            self._max_latency_ns = self._last_latency_ns
 
     @property
     def metrics(self):
-        return {"total_processed": self._book.total_orders_processed}
+        avg_latency = 0
+
+        if self._latency_samples > 0:
+            avg_latency = (
+                self._total_latency_ns // self._latency_samples
+            )
+
+        return {
+            "total_processed": self._book.total_orders_processed,
+            "last_start_ns": self._last_start_ns,
+            "last_end_ns": self._last_end_ns,
+            "last_latency_ns": self._last_latency_ns,
+            "total_latency_ns": self._total_latency_ns,
+            "average_latency_ns": avg_latency,
+            "max_latency_ns": self._max_latency_ns,
+            "latency_samples": self._latency_samples,
+        }
     
     def get_book_state(self):
         cdef PriceLevel* level
