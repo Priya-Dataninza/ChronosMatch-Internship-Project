@@ -3,8 +3,15 @@ import importlib
 import struct
 import sys
 import unittest
+
 from types import ModuleType
 from unittest.mock import Mock, patch
+from pathlib import Path
+
+sys.path.insert(
+    0,
+    str(Path(__file__).resolve().parents[1] / "ipc")
+)
 
 
 class FakeSharedMemory(bytearray):
@@ -62,7 +69,6 @@ class TestOrderGateway(unittest.TestCase):
     def test_invalid_side_does_not_advance_write_pointer(self):
         header_format = self.gateway.HEADER_FORMAT
 
-        # Set write pointer to 5 and read pointer to 2.
         self.memory[:self.gateway.HEADER_SIZE] = (
             header_format.pack(5, 2)
         )
@@ -155,7 +161,6 @@ class TestOrderGateway(unittest.TestCase):
 
         self.assertTrue(result)
 
-        # Verify that the maximum values were packed correctly.
         order_offset = self.gateway.HEADER_SIZE
         stored_order = self.gateway.ORDER_FORMAT.unpack(
             self.memory[
@@ -211,6 +216,54 @@ class TestOrderGateway(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(write_ptr, 5)
         self.assertEqual(read_ptr, 2)
+
+    # New tests for duplicate order ID protection.
+
+    def test_accepts_first_order_id(self):
+        result = self.gateway.produce_order(
+            order_id=101,
+            price=10000,
+            quantity=5,
+            side=1,
+        )
+
+        self.assertTrue(result)
+
+    def test_rejects_duplicate_pending_order_id(self):
+        first_result = self.gateway.produce_order(
+            order_id=101,
+            price=10000,
+            quantity=5,
+            side=1,
+        )
+
+        second_result = self.gateway.produce_order(
+            order_id=101,
+            price=10100,
+            quantity=3,
+            side=2,
+        )
+
+        self.assertTrue(first_result)
+        self.assertFalse(second_result)
+
+    def test_accepts_different_order_ids(self):
+        first_result = self.gateway.produce_order(
+            order_id=101,
+            price=10000,
+            quantity=5,
+            side=1,
+        )
+
+        second_result = self.gateway.produce_order(
+            order_id=102,
+            price=10100,
+            quantity=3,
+            side=2,
+        )
+
+        self.assertTrue(first_result)
+        self.assertTrue(second_result)
 
 
 if __name__ == "__main__":

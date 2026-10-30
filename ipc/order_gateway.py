@@ -1,5 +1,6 @@
 
 # order_gateway.py
+
 from order_format import (
     init_ring_buffer,
     get_mmap_instance,
@@ -14,12 +15,33 @@ init_ring_buffer()
 file_handle, shared_memory = get_mmap_instance(mode="r+b")
 
 
+def order_id_exists(order_id: int, write_ptr: int, read_ptr: int) -> bool:
+    """
+    Check whether the given order ID already exists
+    among orders currently waiting in the ring buffer.
+    """
+
+    for pointer in range(read_ptr, write_ptr):
+        slot_index = pointer % MAX_ORDERS
+        offset = HEADER_SIZE + (slot_index * ORDER_SIZE)
+
+        existing_order = ORDER_FORMAT.unpack(
+            shared_memory[offset:offset + ORDER_SIZE]
+        )
+
+        if existing_order[0] == order_id:
+            return True
+
+    return False
+
+
 def produce_order(
     order_id: int,
     price: int,
     quantity: int,
     side: int,
 ) -> bool:
+
     # Validate unsigned 32-bit integer limits.
     max_value = (1 << 32) - 1
 
@@ -56,6 +78,14 @@ def produce_order(
     write_ptr, read_ptr = HEADER_FORMAT.unpack(
         shared_memory[0:HEADER_SIZE]
     )
+
+    # Reject duplicate IDs among pending orders.
+    if order_id_exists(order_id, write_ptr, read_ptr):
+        print(
+            f"[REJECTED] Duplicate Order ID #{order_id}: "
+            "An order with this ID is already pending."
+        )
+        return False
 
     # Prevent buffer overflow.
     if write_ptr - read_ptr >= MAX_ORDERS:
