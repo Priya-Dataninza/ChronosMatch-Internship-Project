@@ -223,7 +223,8 @@ cdef class PyOrderBook:
     
     def __cinit__(self):
         self._book = <OrderBook*>malloc(sizeof(OrderBook))
-        if self._book != NULL:
+        if self._book == NULL:
+            raise MemoryError()
             self._book.best_bid = NULL
             self._book.best_ask = NULL
             self._book.total_orders_processed = 0
@@ -262,6 +263,12 @@ cdef class PyOrderBook:
             free(self._book)
 
     def process_incoming(self, uint64_t order_id, uint32_t price, uint32_t qty, uint8_t side):
+        if side not in (BUY, SELL):
+            raise ValueError("side must be BUY (1) or SELL (2)")
+
+        if price <= 0 or qty <= 0:
+            raise ValueError("price and quantity must be positive")
+
         with nogil:
             match_order(self._book, order_id, price, qty, side)
 
@@ -300,3 +307,8 @@ cdef class PyOrderBook:
             level = level.next
 
         return {"bids": bids, "asks": asks}
+
+
+##for running
+
+##python setup.py build_ext --inplace --force 
