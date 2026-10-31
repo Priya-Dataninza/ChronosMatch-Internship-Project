@@ -230,18 +230,20 @@ cdef class PyOrderBook:
     
     def __cinit__(self):
         self._book = <OrderBook*>malloc(sizeof(OrderBook))
+
         if self._book == NULL:
             raise MemoryError()
-            self._book.best_bid = NULL
-            self._book.best_ask = NULL
-            self._book.total_orders_processed = 0
 
-            self._last_start_ns = 0
-            self._last_end_ns = 0
-            self._last_latency_ns = 0
-            self._total_latency_ns = 0
-            self._max_latency_ns = 0
-            self._latency_samples = 0
+        self._book.best_bid = NULL
+        self._book.best_ask = NULL
+        self._book.total_orders_processed = 0
+
+        self._last_start_ns = 0
+        self._last_end_ns = 0
+        self._last_latency_ns = 0
+        self._total_latency_ns = 0
+        self._max_latency_ns = 0
+        self._latency_samples = 0
         
     def __dealloc__(self):
         cdef PriceLevel* curr_level
