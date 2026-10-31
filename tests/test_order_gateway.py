@@ -3,11 +3,12 @@ import importlib
 import struct
 import sys
 import unittest
-
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock, patch
-from pathlib import Path
 
+
+# Add the ipc directory to the Python import path.
 sys.path.insert(
     0,
     str(Path(__file__).resolve().parents[1] / "ipc")
@@ -217,7 +218,7 @@ class TestOrderGateway(unittest.TestCase):
         self.assertEqual(write_ptr, 5)
         self.assertEqual(read_ptr, 2)
 
-    # New tests for duplicate order ID protection.
+    # Duplicate order ID protection tests.
 
     def test_accepts_first_order_id(self):
         result = self.gateway.produce_order(
@@ -258,6 +259,39 @@ class TestOrderGateway(unittest.TestCase):
         second_result = self.gateway.produce_order(
             order_id=102,
             price=10100,
+            quantity=3,
+            side=2,
+        )
+
+        self.assertTrue(first_result)
+        self.assertTrue(second_result)
+
+    # Order ID reuse after consumption test.
+
+    def test_accepts_order_id_after_previous_order_is_consumed(self):
+        header_format = self.gateway.HEADER_FORMAT
+
+        # Submit the first order.
+        first_result = self.gateway.produce_order(
+            order_id=101,
+            price=10000,
+            quantity=5,
+            side=1,
+        )
+
+        # Simulate the consumer processing the order.
+        write_ptr, _ = header_format.unpack(
+            self.memory[:self.gateway.HEADER_SIZE]
+        )
+
+        self.memory[:self.gateway.HEADER_SIZE] = header_format.pack(
+            write_ptr, write_ptr
+        )
+
+        # Reuse the ID after the previous order has been consumed.
+        second_result = self.gateway.produce_order(
+            order_id=101,
+            price=10500,
             quantity=3,
             side=2,
         )
