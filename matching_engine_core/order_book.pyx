@@ -365,6 +365,49 @@ cdef class PyOrderBook:
 
         return {"bids": bids, "asks": asks}
 
+    def get_book_summary(self):
+        cdef PriceLevel* level
+        cdef Order* order
+
+        cdef uint64_t total_bid_qty = 0
+        cdef uint64_t total_ask_qty = 0
+
+        cdef uint64_t bid_order_count = 0
+        cdef uint64_t ask_order_count = 0
+
+        # Calculate BUY-side liquidity
+        level = self._book.best_bid
+
+        while level != NULL:
+            order = level.head
+
+            while order != NULL:
+                total_bid_qty += order.qty
+                bid_order_count += 1
+                order = order.next
+
+            level = level.next
+
+        # Calculate SELL-side liquidity
+        level = self._book.best_ask
+
+        while level != NULL:
+            order = level.head
+
+            while order != NULL:
+                total_ask_qty += order.qty
+                ask_order_count += 1
+                order = order.next
+
+            level = level.next
+
+        return {
+            "total_bid_quantity": total_bid_qty,
+            "total_ask_quantity": total_ask_qty,
+            "bid_order_count": bid_order_count,
+            "ask_order_count": ask_order_count
+        }
+
 
 ##for running
 
