@@ -1,16 +1,16 @@
-
 import mmap
 import os
 import struct
 from contextlib import contextmanager
 
+##header will store read and write index of the ring buffer.
 HEADER_FORMAT = struct.Struct("<QQ")
 HEADER_SIZE = HEADER_FORMAT.size
 
 ORDER_FORMAT = struct.Struct("<IIII")
 ORDER_SIZE = ORDER_FORMAT.size
 
-MAX_ORDERS = 100000 # Use 2 for initial tests; later change to 100_000.
+MAX_ORDERS = 1000000 # Use 2 for initial tests; later change to 100_0000.
 FILE_SIZE = HEADER_SIZE + ORDER_SIZE * MAX_ORDERS
 FILE_NAME = "shared.bin"
 
@@ -28,6 +28,13 @@ def init_ring_buffer():
             f"{FILE_NAME} has an unexpected size. "
             "Stop both processes and reset the buffer."
         )
+
+def reset_ring_buffer():
+    with open(FILE_NAME, "w+b") as f:
+        f.truncate(FILE_SIZE)
+        f.write(HEADER_FORMAT.pack(0, 0))
+
+    print("[SYSTEM] Ring buffer reset successfully.")
 
 
 def get_mmap_instance(mode="r+b"):
@@ -48,10 +55,10 @@ def get_mmap_instance(mode="r+b"):
             )
         else:
             mem = mmap.mmap(
-                f.fileno(), FILE_SIZE,
+                f.fileno(),
+                FILE_SIZE,
                 access=access,
             )
-
         return f, mem
 
     except Exception:

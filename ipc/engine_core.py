@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
     
-from matching_engine_core.order_book_fallback import PyOrderBook
+from matching_engine_core.order_book import PyOrderBook
 
 init_ring_buffer()
 file_handle, shared_memory = get_mmap_instance()
@@ -33,10 +33,12 @@ def run_engine():
 
     order_book = PyOrderBook()
     processed = 0
-    log_each_order = True  # Set False for throughput testing.
+    log_each_order = False  # Set False for throughput testing.
 
     try:
         while True:
+            if processed >= 1_000_000:
+                break
             with buffer_lock(file_handle):
                 write_ptr, read_ptr = HEADER_FORMAT.unpack_from(
                     shared_memory, 0
