@@ -408,6 +408,57 @@ cdef class PyOrderBook:
             "ask_order_count": ask_order_count
         }
 
+    def get_market_imbalance(self):
+        cdef PriceLevel* level
+        cdef Order* order
+
+        cdef unsigned long long bid_qty = 0
+        cdef unsigned long long ask_qty = 0
+
+        level = self._book.best_bid
+
+        while level != NULL:
+            order = level.head
+            while order != NULL:
+                bid_qty += order.qty
+                order = order.next
+            level = level.next
+
+        level = self._book.best_ask
+
+        while level != NULL:
+            order = level.head
+            while order != NULL:
+                ask_qty += order.qty
+                order = order.next
+            level = level.next
+
+        total = bid_qty + ask_qty
+
+        if total == 0:
+            return {
+                "bid_quantity": bid_qty,
+                "ask_quantity": ask_qty,
+                "imbalance": 0.0,
+                "pressure": "EMPTY"
+            }
+
+        imbalance = (bid_qty - ask_qty) / total
+
+        if imbalance > 0.2:
+            pressure = "BUY PRESSURE"
+        elif imbalance < -0.2:
+            pressure = "SELL PRESSURE"
+        else:
+            pressure = "BALANCED"
+
+        return {
+            "bid_quantity": bid_qty,
+            "ask_quantity": ask_qty,
+            "imbalance": imbalance,
+            "pressure": pressure
+        }
+
 
 ##for running
 

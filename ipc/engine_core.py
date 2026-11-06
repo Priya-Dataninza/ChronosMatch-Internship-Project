@@ -1,7 +1,7 @@
 
 import time
 
-
+from matching_engine_core import order_book
 
 from ipc.shared_buffer import (
     init_ring_buffer,
@@ -96,6 +96,14 @@ def run_engine():
 if __name__ == "__main__":
     try:
         run_engine()
+        print("\n[MARKET ANALYSIS]")
+
+        market = order_book.get_market_imbalance()
+
+        print(f"Bid Quantity: {market['bid_quantity']}")
+        print(f"Ask Quantity: {market['ask_quantity']}")
+        print(f"Imbalance: {market['imbalance']:.4f}")
+        print(f"Market Pressure: {market['pressure']}")
     finally:
         shared_memory.close()
         file_handle.close()
