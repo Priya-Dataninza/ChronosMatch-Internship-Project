@@ -13,6 +13,7 @@ from ipc.shared_buffer import (
     get_mmap_instance,
     init_ring_buffer,
 )
+from ipc.engine_status import read_engine_status
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -93,6 +94,7 @@ def status(request):
     try:
         trades = _recent_trades()
         ledger_status = "online" if LEDGER_PATH.exists() else "waiting"
+        engine_status = read_engine_status()
     except sqlite3.Error as error:
         return JsonResponse(
             {
@@ -107,6 +109,7 @@ def status(request):
     return JsonResponse({
         "status": "online",
         "queue": queue_status,
+        "engine": engine_status,
         "ledger_status": ledger_status,
         "trades": trades,
     })

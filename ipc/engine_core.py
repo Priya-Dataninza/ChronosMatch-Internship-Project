@@ -1,7 +1,9 @@
 
+import os
 from queue import Queue
 from threading import Thread
 import time
+from time import perf_counter_ns
 
 from ipc.shared_buffer import (
     init_ring_buffer,
@@ -19,10 +21,12 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+STOP_FILE = os.environ.get("CHRONOS_STOP_FILE")
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
     
 from matching_engine_core.engine_loader import PyOrderBook
+from ipc.engine_status import publish_engine_status
 from ipc.trade_ledger import trade_writer
 
 init_ring_buffer()
@@ -41,13 +45,36 @@ def run_engine():
     )
     audit_writer.start()
     processed = 0
+    executed_trades = 0
+    total_latency_ns = 0
+    last_latency_ns = None
+    max_latency_ns = None
+    last_status_update = 0.0
+    engine_type = (
+        "cython"
+        if type(order_book).__module__ == "matching_engine_core.order_book"
+        else "python-fallback"
+    )
     log_each_order = False  # Set False for throughput testing.
 
-    try:
-        while True:
-            if processed >= 1_000_000:
-                break
+    def publish_status(status):
+        publish_engine_status(
+            audit_queue,
+            status,
+            engine_type=engine_type,
+            orders_processed=processed,
+            trades_executed=executed_trades,
+            last_latency_ns=last_latency_ns,
+            average_latency_ns=(
+                total_latency_ns // processed if processed else None
+            ),
+            max_latency_ns=max_latency_ns,
+        )
 
+    try:
+        publish_status("running")
+
+        while True:
             order = None
 
             with buffer_lock(file_handle):
@@ -68,6 +95,12 @@ def run_engine():
                     )
 
             if order is None:
+                now = time.monotonic()
+                if STOP_FILE and Path(STOP_FILE).exists():
+                    break
+                if now - last_status_update >= 0.25:
+                    publish_status("running")
+                    last_status_update = now
                 time.sleep(0.0001)
                 continue
 
@@ -80,12 +113,28 @@ def run_engine():
                 )
                 continue
 
+            start_ns = perf_counter_ns()
             trades = order_book.process_incoming(
                 order_id, price, qty, side
             )
+            last_latency_ns = perf_counter_ns() - start_ns
+            total_latency_ns += last_latency_ns
+            max_latency_ns = (
+                last_latency_ns
+                if max_latency_ns is None
+                else max(max_latency_ns, last_latency_ns)
+            )
+            executed_trades += len(trades)
             if trades:
                 audit_queue.put(trades)
             processed += 1
+
+            now = time.monotonic()
+            if now - last_status_update >= 0.25:
+                if STOP_FILE and Path(STOP_FILE).exists():
+                    break
+                publish_status("running")
+                last_status_update = now
 
             if log_each_order:
                 label = "BUY" if side == 1 else "SELL"
@@ -100,8 +149,11 @@ def run_engine():
     finally:
         print(f"[ENGINE] Orders processed: {processed}")
         print(f"[ENGINE] Metrics: {order_book.metrics}")
-        audit_queue.put(None)
-        audit_writer.join()
+        try:
+            publish_status("stopped")
+        finally:
+            audit_queue.put(None)
+            audit_writer.join()
 
     return order_book
 

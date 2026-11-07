@@ -21,7 +21,7 @@ or another exchange and is not suitable for real-money trading.
 | Engine consumer | `ipc/engine_core.py` | Reads and processes orders from the primary mmap bus. |
 | Async market simulator | `src/market_simulator.py`, `src/main.py` | Generates orders asynchronously and submits them through the same gateway the engine consumes. |
 | Terminal dashboard | `dashboard/latency_dashboard.py` | Displays processing latency, order-book top-of-book, backlog, and large-order highlighting; queues fills to a separate SQLite writer process. |
-| Django web frontend | `webapp/`, `webdashboard/` | Browser dashboard with live mmap queue status, manual order submission, and recent SQLite fills. |
+| Django web frontend | `webapp/`, `webdashboard/` | Browser dashboard with live mmap queue status, manual order submission, engine heartbeat and latency, and recent SQLite fills. |
 | Trade ledger | Dashboard SQLite writer; helper in `ipc/trade_ledger.py` | Persists execution records in SQLite for audit. |
 | Secondary ring-buffer example | `src/mmap_ring_buffer.py` | Standalone, typed order record ring buffer with status statistics; retained for focused tests and learning. It is not the primary live IPC bus. |
 
@@ -68,7 +68,14 @@ or another exchange and is not suitable for real-money trading.
 13. **Connected the standalone engine to the web ledger.** Engine fills are
     queued to a background SQLite writer using the same project-root
     `ledger.db` and `executed_trades` schema read by the Django status API.
-14. **Made whale highlighting match the project criterion.** The live
+14. **Added a combined local launcher.** `python manage.py runchronos`
+    launches the matching engine and Django server together and requests a
+    graceful engine shutdown when the server exits.
+15. **Added live engine health and latency reporting.** The engine publishes
+    heartbeat and per-call latency aggregates through the background SQLite
+    writer. The Django page shows average, last, and maximum latency, plus
+    processed order/trade counts, and marks stale or stopped engines.
+16. **Made whale highlighting match the project criterion.** The live
     terminal dashboard now highlights a large incoming order only if its
     fills span multiple price levels. The terminal's fake demo can still
     display explicitly simulated whale highlights.
@@ -83,13 +90,15 @@ when a fill occurs, rather than allocating space for every resting order on
 each incoming order. A per-book lock protects state while the GIL is
 released.
 
-The engine captures `perf_counter_ns()` timestamps immediately before and
-after the native matching call and exposes last, average, maximum, and sample
-count metrics. The terminal monitor separately shows per-order time, recent
-latency distribution, order rate, backlog, and best bid/ask. Those are local
-process measurements, not exchange round-trip latency. The code avoids
-Python object operations in the matching loop; it does not claim that Python
-garbage collection is disabled for the whole application.
+The Cython book accumulates native matching metrics. The IPC consumer also
+captures `perf_counter_ns()` around each `process_incoming` call and publishes
+last, average, and maximum call latency in its heartbeat. This web-facing
+measurement includes the Python/Cython boundary and result conversion. The
+terminal monitor separately shows per-order time, recent latency
+distribution, order rate, backlog, and best bid/ask. These are local process
+measurements, not exchange round-trip latency. The code avoids Python object
+operations in the matching loop; it does not claim that Python garbage
+collection is disabled for the whole application.
 
 Validation completed: the Cython extension compiled successfully on the
 project environment; matching tests cover partial fills and price/FIFO
@@ -112,11 +121,13 @@ configured large-order size fills at more than one price level. The project
 report, README, test commands, and local Django run instructions are
 available for the final demonstration.
 
-Validation completed: Django system checks passed; all 43 project tests
-passed, including all 4 Django-specific tests; and the Cython extension
-rebuilt successfully. The one-million-order benchmark and sustained
-throughput/latency targets have not been run/verified in this final pass.
-This remains an educational local simulator, not a production or
+The combined `runchronos` command was exercised with the compiled engine:
+the browser API reported a live Cython process, a submitted crossing order
+pair generated an audited fill, and the page's latency and processed-order
+metrics updated. Django system checks passed and all 46 project tests passed,
+including all 4 Django-specific tests. The one-million-order benchmark and
+sustained throughput/latency targets have not been run/verified in this final
+pass. This remains an educational local simulator, not a production or
 exchange-connected trading system.
 
 ## How to run and validate
@@ -129,9 +140,10 @@ python setup.py build_ext --inplace
 python -m unittest discover -v
 ```
 
-Start the browser dashboard with `python manage.py runserver`, open
-`http://127.0.0.1:8000/`, and run `python -m ipc.engine_core` in another
-terminal to consume submitted orders.
+Start the engine and browser dashboard together with
+`python manage.py runchronos`, then open `http://127.0.0.1:8000/`. Use
+`python manage.py runserver` plus `python -m ipc.engine_core` in separate
+terminals only when you specifically need separate process control.
 
 For the interactive run, start `python dashboard/latency_dashboard.py`,
 then in a second terminal run:

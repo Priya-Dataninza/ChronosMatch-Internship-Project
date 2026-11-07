@@ -6,6 +6,9 @@
     minimumFractionDigits: 2,
   });
   const $ = (id) => document.getElementById(id);
+  const latencyUs = (nanoseconds) => (
+    Number.isFinite(nanoseconds) ? (nanoseconds / 1000).toFixed(2) : "—"
+  );
 
   function updateClock() {
     $("local-clock").textContent = new Intl.DateTimeFormat("en-GB", {
@@ -54,7 +57,23 @@
       if (!response.ok) throw new Error(data.error || "Status unavailable");
 
       const queue = data.queue;
-      $("engine-status").textContent = "QUEUE ONLINE";
+      const engine = data.engine || { status: "unavailable" };
+      const engineRunning = engine.status === "running";
+      $("engine-status").textContent = engineRunning
+        ? `ENGINE RUNNING · ${(engine.engine_type || "UNKNOWN").toUpperCase()}`
+        : `ENGINE ${engine.status.toUpperCase()}`;
+      $("engine-status").style.color = engineRunning
+        ? "var(--green)"
+        : "var(--red)";
+      $("engine-guidance").hidden = engineRunning;
+      $("engine-latency").textContent = latencyUs(
+        engine.average_latency_ns
+      );
+      $("engine-counts").textContent =
+        `${number.format(engine.orders_processed || 0)} orders · ${number.format(engine.trades_executed || 0)} fills`;
+      $("engine-latency-foot").textContent = engineRunning
+        ? `last ${latencyUs(engine.last_latency_ns)} µs · max ${latencyUs(engine.max_latency_ns)} µs`
+        : `Engine ${engine.status}; start runchronos`;
       $("queue-status-tag").textContent = "ONLINE";
       $("queued-orders").textContent = number.format(queue.queued);
       $("free-capacity").textContent = number.format(queue.free);
@@ -70,7 +89,7 @@
         : "var(--muted)";
       renderTrades(data.trades || []);
     } catch (error) {
-      $("engine-status").textContent = "DISCONNECTED";
+      $("engine-status").textContent = "STATUS UNAVAILABLE";
       $("queue-status-tag").textContent = "OFFLINE";
       $("queue-status-tag").style.color = "var(--red)";
       $("ledger-status").textContent = "UNAVAILABLE";

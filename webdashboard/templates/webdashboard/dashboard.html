@@ -77,10 +77,20 @@
             <div class="meter"><span id="queue-meter"></span></div>
           </article>
           <article class="metric-card">
+            <div class="metric-label">AVG MATCH LATENCY <span class="metric-symbol">◷</span></div>
+            <div class="metric-value"><span id="engine-latency">—</span><small>µs</small></div>
+            <div class="metric-foot" id="engine-counts">0 orders · 0 fills</div>
+            <div class="metric-foot" id="engine-latency-foot">Engine not running</div>
+          </article>
+          <article class="metric-card">
             <div class="metric-label">TRADE LEDGER <span class="metric-symbol">▣</span></div>
             <div class="metric-value metric-status" id="ledger-status">WAITING</div>
             <div class="metric-foot">SQLite execution audit</div>
           </article>
+        </div>
+        <div class="engine-guidance" id="engine-guidance">
+          Matching engine is stopped. Start the complete demo with
+          <code>python manage.py runchronos</code>.
         </div>
 
         <div class="section-grid">

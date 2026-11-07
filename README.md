@@ -27,6 +27,8 @@ The curses dashboard can run its own consumer and separate SQLite writer.
 Executed fills are stored in `ledger.db` in the `executed_trades` table.
 The standalone `src.mmap_ring_buffer.RingBuffer` is retained as a smaller
 ring-buffer example and is not the live `shared.bin` bus.
+The Django API reads the engine heartbeat and latency aggregates from the
+same SQLite/WAL database as the audited executions.
 
 ## Setup
 
@@ -46,26 +48,32 @@ fallback; that mode is functional but is not a low-latency performance mode.
 
 ### Django web dashboard
 
-Install the requirements, then start the web interface:
+Install the requirements and build the Cython extension once:
 
 ```powershell
-python manage.py runserver
+python -m pip install -r requirements.txt
+python setup.py build_ext --inplace
 ```
 
-Open `http://127.0.0.1:8000/`. The page refreshes shared-queue and ledger
-status automatically. Submit manual BUY/SELL limit orders from the order
-ticket. To see the queue drain and execution table populate, start the
-matching consumer in a second terminal:
+Start the engine and Django web server together:
 
 ```powershell
-python -m ipc.engine_core
+python manage.py runchronos
 ```
 
-The web server and the engine both use the same project-root `shared.bin`.
+Open `http://127.0.0.1:8000/`. The page refreshes queue depth, engine status,
+average/last/maximum match latency, and recent audited fills automatically.
+Submit manual BUY/SELL limit orders from the order ticket. Stop the combined
+demo with `Ctrl+C`; the engine writes its final metrics and drains its audit
+queue before exiting. To run the web server separately, use
+`python manage.py runserver` and run `python -m ipc.engine_core` in another
+terminal.
+
+The web server and engine both use the project-root `shared.bin`.
 The development server is intended for local demos only; `DEBUG=True`, the
 development key, and host configuration must be changed before deployment.
-The dashboard cannot display engine latency/book state that is not exported
-by the engine process; it reports queue depth and recorded executions.
+The dashboard reports engine-call latency measured locally around each
+matching call; this is not network or exchange round-trip latency.
 
 For a complete dashboard demonstration, start the dashboard first:
 
