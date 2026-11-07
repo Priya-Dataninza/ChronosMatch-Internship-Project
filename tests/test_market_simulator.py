@@ -9,6 +9,7 @@ from src.market_simulator import (
     convert_order_for_gateway,
     generate_orders,
     send_order_to_gateway,
+    send_orders_to_gateway,
 )
 
 
@@ -114,6 +115,18 @@ class TestMarketSimulator(unittest.TestCase):
 
         self.assertEqual(result, (2, 9080, 10, 2))
 
+    def test_conversion_rejects_unknown_side(self):
+        order = Order(
+            order_id=2,
+            side="HOLD",
+            price=90.80,
+            quantity=10,
+            timestamp_ns=456,
+        )
+
+        with self.assertRaisesRegex(ValueError, "side must be BUY or SELL"):
+            convert_order_for_gateway(order)
+
     def test_send_order_to_gateway_passes_converted_fields(self):
         order = Order(
             order_id=7,
@@ -126,7 +139,7 @@ class TestMarketSimulator(unittest.TestCase):
         gateway = ModuleType("order_gateway")
         gateway.produce_order = Mock(return_value=True)
 
-        with patch.dict("sys.modules", {"order_gateway": gateway}):
+        with patch.dict("sys.modules", {"ipc.order_gateway": gateway}):
             result = send_order_to_gateway(order)
 
         self.assertTrue(result)
@@ -146,13 +159,30 @@ class TestMarketSimulator(unittest.TestCase):
         gateway = ModuleType("order_gateway")
         gateway.produce_order = Mock(return_value=False)
 
-        with patch.dict("sys.modules", {"order_gateway": gateway}):
+        with patch.dict("sys.modules", {"ipc.order_gateway": gateway}):
             result = send_order_to_gateway(order)
 
         self.assertFalse(result)
         gateway.produce_order.assert_called_once_with(
             8, 10125, 3, 2
         )
+
+    def test_send_orders_to_gateway_batches_converted_fields(self):
+        orders = [
+            Order(7, "BUY", 99.75, 5, 123),
+            Order(8, "SELL", 101.25, 3, 456),
+        ]
+        gateway = ModuleType("order_gateway")
+        gateway.produce_orders = Mock(return_value=True)
+
+        with patch.dict("sys.modules", {"ipc.order_gateway": gateway}):
+            result = send_orders_to_gateway(orders)
+
+        self.assertTrue(result)
+        gateway.produce_orders.assert_called_once_with([
+            (7, 9975, 5, 1),
+            (8, 10125, 3, 2),
+        ])
 
     def test_send_order_to_gateway_propagates_gateway_error(self):
         order = Order(
@@ -168,7 +198,7 @@ class TestMarketSimulator(unittest.TestCase):
             side_effect=OSError("Gateway unavailable")
         )
 
-        with patch.dict("sys.modules", {"order_gateway": gateway}):
+        with patch.dict("sys.modules", {"ipc.order_gateway": gateway}):
             with self.assertRaisesRegex(
                 OSError, "Gateway unavailable"
             ):

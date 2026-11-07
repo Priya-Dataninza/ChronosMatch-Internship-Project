@@ -3,16 +3,9 @@ import importlib
 import struct
 import sys
 import unittest
-from pathlib import Path
+from contextlib import nullcontext
 from types import ModuleType
 from unittest.mock import Mock, patch
-
-
-# Add the ipc directory to the Python import path.
-sys.path.insert(
-    0,
-    str(Path(__file__).resolve().parents[1] / "ipc")
-)
 
 
 class FakeSharedMemory(bytearray):
@@ -39,22 +32,27 @@ class TestOrderGateway(unittest.TestCase):
         fake_format.ORDER_FORMAT = order_format
         fake_format.ORDER_SIZE = order_format.size
         fake_format.MAX_ORDERS = max_orders
+        fake_format.buffer_lock = Mock(
+            side_effect=lambda _: nullcontext()
+        )
         fake_format.init_ring_buffer = Mock()
         fake_format.get_mmap_instance = Mock(
             return_value=(self.file_handle, self.memory)
         )
 
-        # Prevent tests from modifying the real shared.bin file.
-        sys.modules.pop("order_gateway", None)
-
-        with patch.dict(
+        sys.modules.pop("ipc.order_gateway", None)
+        sys.modules.pop("ipc.shared_buffer", None)
+        self.module_patcher = patch.dict(
             sys.modules,
-            {"order_format": fake_format},
-        ):
-            self.gateway = importlib.import_module("order_gateway")
+            {"ipc.shared_buffer": fake_format},
+        )
+        self.module_patcher.start()
+
+        self.gateway = importlib.import_module("ipc.order_gateway")
 
     def tearDown(self):
-        sys.modules.pop("order_gateway", None)
+        sys.modules.pop("ipc.order_gateway", None)
+        self.module_patcher.stop()
 
     def test_rejects_invalid_sides(self):
         for side in (0, 3, -1):
@@ -229,6 +227,57 @@ class TestOrderGateway(unittest.TestCase):
         )
 
         self.assertTrue(result)
+
+    def test_batch_is_published_together(self):
+        result = self.gateway.produce_orders([
+            (201, 10000, 5, 1),
+            (202, 10100, 3, 2),
+        ])
+
+        write_ptr, read_ptr = self.gateway.HEADER_FORMAT.unpack(
+            self.memory[:self.gateway.HEADER_SIZE]
+        )
+        first = self.gateway.ORDER_FORMAT.unpack_from(
+            self.memory, self.gateway.HEADER_SIZE
+        )
+        second = self.gateway.ORDER_FORMAT.unpack_from(
+            self.memory,
+            self.gateway.HEADER_SIZE + self.gateway.ORDER_SIZE,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual((write_ptr, read_ptr), (2, 0))
+        self.assertEqual(first, (201, 10000, 5, 1))
+        self.assertEqual(second, (202, 10100, 3, 2))
+
+    def test_duplicate_in_batch_does_not_publish_any_order(self):
+        result = self.gateway.produce_orders([
+            (201, 10000, 5, 1),
+            (201, 10100, 3, 2),
+        ])
+
+        write_ptr, read_ptr = self.gateway.HEADER_FORMAT.unpack(
+            self.memory[:self.gateway.HEADER_SIZE]
+        )
+
+        self.assertFalse(result)
+        self.assertEqual((write_ptr, read_ptr), (0, 0))
+
+    def test_batch_that_exceeds_free_capacity_is_rejected_atomically(self):
+        result = self.gateway.produce_orders([
+            (201, 10000, 5, 1),
+            (202, 10100, 3, 2),
+            (203, 10200, 4, 1),
+            (204, 10300, 2, 2),
+            (205, 10400, 1, 1),
+        ])
+
+        write_ptr, read_ptr = self.gateway.HEADER_FORMAT.unpack(
+            self.memory[:self.gateway.HEADER_SIZE]
+        )
+
+        self.assertFalse(result)
+        self.assertEqual((write_ptr, read_ptr), (0, 0))
 
     def test_rejects_duplicate_pending_order_id(self):
         first_result = self.gateway.produce_order(

@@ -16,23 +16,87 @@ init_ring_buffer()
 file_handle, shared_memory = get_mmap_instance()
 
 
-def order_id_exists(order_id: int, write_ptr: int, read_ptr: int) -> bool:
-    """
-    Check whether an order ID already exists
-    among orders waiting in the ring buffer.
-    """
-    for pointer in range(read_ptr, write_ptr):
-        slot_index = pointer % MAX_ORDERS
-        offset = HEADER_SIZE + (slot_index * ORDER_SIZE)
+def produce_orders(orders) -> bool:
+    """Atomically publish a batch of orders with one queue lock."""
+    batch = list(orders)
+    if not batch:
+        return True
 
-        existing_order = ORDER_FORMAT.unpack_from(
-            shared_memory, offset
+    records = []
+    order_ids = set()
+    for order in batch:
+        try:
+            order_id, price, quantity, side = order
+        except (TypeError, ValueError):
+            print("[REJECTED] Each order must contain four fields.")
+            return False
+
+        values = (order_id, price, quantity, side)
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool)
+            and 0 <= value <= MAX_UINT32
+            for value in values
+        ):
+            print("[REJECTED] Fields must be unsigned 32-bit integers.")
+            return False
+
+        if price == 0:
+            print("[REJECTED] Price must be positive.")
+            return False
+
+        if quantity == 0:
+            print("[REJECTED] Quantity must be positive.")
+            return False
+
+        if side not in (1, 2):
+            print("[REJECTED] Side must be 1 (BUY) or 2 (SELL).")
+            return False
+
+        if order_id in order_ids:
+            print(f"[REJECTED] Duplicate Order ID #{order_id} in batch.")
+            return False
+        order_ids.add(order_id)
+        records.append((order_id, price, quantity, side))
+
+    with buffer_lock(file_handle):
+        write_ptr, read_ptr = HEADER_FORMAT.unpack_from(
+            shared_memory, 0
         )
 
-        if existing_order[0] == order_id:
-            return True
+        if write_ptr - read_ptr + len(records) > MAX_ORDERS:
+            print("[BUFFER FULL] Batch not written.")
+            return False
 
-    return False
+        for pointer in range(read_ptr, write_ptr):
+            slot_index = pointer % MAX_ORDERS
+            offset = HEADER_SIZE + slot_index * ORDER_SIZE
+            existing_order_id = ORDER_FORMAT.unpack_from(
+                shared_memory, offset
+            )[0]
+            if existing_order_id in order_ids:
+                print(
+                    f"[REJECTED] Duplicate pending order ID "
+                    f"#{existing_order_id}."
+                )
+                return False
+
+        for index, order in enumerate(records):
+            slot_index = (write_ptr + index) % MAX_ORDERS
+            offset = HEADER_SIZE + slot_index * ORDER_SIZE
+            ORDER_FORMAT.pack_into(
+                shared_memory,
+                offset,
+                *order,
+            )
+
+        HEADER_FORMAT.pack_into(
+            shared_memory,
+            0,
+            write_ptr + len(records),
+            read_ptr,
+        )
+
+    return True
 
 
 def produce_order(
@@ -41,72 +105,7 @@ def produce_order(
     quantity: int,
     side: int,
 ) -> bool:
-
-    # Validate integer fields.
-    values = (order_id, price, quantity, side)
-
-    if not all(
-        isinstance(value, int) and not isinstance(value, bool)
-        and 0 <= value <= MAX_UINT32
-        for value in values
-    ):
-        print("[REJECTED] Fields must be unsigned 32-bit integers.")
-        return False
-
-    if price == 0:
-        print("[REJECTED] Price must be positive.")
-        return False
-
-    if quantity == 0:
-        print("[REJECTED] Quantity must be positive.")
-        return False
-
-    if side not in (1, 2):
-        print("[REJECTED] Side must be 1 (BUY) or 2 (SELL).")
-        return False
-
-    # Synchronize access to shared memory.
-    with buffer_lock(file_handle):
-
-        write_ptr, read_ptr = HEADER_FORMAT.unpack_from(
-            shared_memory, 0
-        )
-
-        # Prevent duplicate pending order IDs.
-        if order_id_exists(order_id, write_ptr, read_ptr):
-            print(f"[REJECTED] Duplicate Order ID #{order_id}.")
-            return False
-
-        # Prevent buffer overflow.
-        if write_ptr - read_ptr >= MAX_ORDERS:
-            print("[BUFFER FULL] Order not written.")
-            return False
-
-        # Calculate the ring-buffer slot.
-        slot_index = write_ptr % MAX_ORDERS
-        offset = HEADER_SIZE + slot_index * ORDER_SIZE
-
-        # Write the order directly into shared memory.
-        ORDER_FORMAT.pack_into(
-            shared_memory,
-            offset,
-            order_id,
-            price,
-            quantity,
-            side,
-        )
-
-        # Publish the updated write pointer.
-        HEADER_FORMAT.pack_into(
-            shared_memory,
-            0,
-            write_ptr + 1,
-            read_ptr,
-        )
-
-        shared_memory.flush()
-
-    return True
+    return produce_orders([(order_id, price, quantity, side)])
 
 
 if __name__ == "__main__":

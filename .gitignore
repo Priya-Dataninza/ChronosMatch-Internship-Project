@@ -34,6 +34,7 @@ Thumbs.db
 
 # Database files
 *.db
+*.sqlite3
 
 # ChronosMatch shared memory
 shared.bin

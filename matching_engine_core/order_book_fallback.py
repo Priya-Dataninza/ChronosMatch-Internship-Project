@@ -15,6 +15,7 @@ class PyOrderBook:
             raise ValueError("price and quantity must be positive")
 
         self.total_processed += 1
+        trades = []
 
         if side == 1:  # BUY matches the cheapest eligible asks
             while qty > 0 and self.asks:
@@ -28,6 +29,13 @@ class PyOrderBook:
                     resting = orders[0]
                     matched = min(qty, resting["quantity"])
 
+                    trades.append({
+                        "maker_order_id": resting["order_id"],
+                        "taker_order_id": order_id,
+                        "price": best_price,
+                        "quantity": matched,
+                        "side": side,
+                    })
                     qty -= matched
                     resting["quantity"] -= matched
 
@@ -56,6 +64,13 @@ class PyOrderBook:
                     resting = orders[0]
                     matched = min(qty, resting["quantity"])
 
+                    trades.append({
+                        "maker_order_id": resting["order_id"],
+                        "taker_order_id": order_id,
+                        "price": best_price,
+                        "quantity": matched,
+                        "side": side,
+                    })
                     qty -= matched
                     resting["quantity"] -= matched
 
@@ -72,9 +87,70 @@ class PyOrderBook:
                     "quantity": qty,
                 })
 
+        return trades
+
     @property
     def metrics(self):
         return {"total_processed": self.total_processed}
+
+    def get_book_summary(self):
+        bid_orders = [
+            order
+            for orders in self.bids.values()
+            for order in orders
+        ]
+        ask_orders = [
+            order
+            for orders in self.asks.values()
+            for order in orders
+        ]
+        return {
+            "total_bid_quantity": sum(
+                order["quantity"] for order in bid_orders
+            ),
+            "total_ask_quantity": sum(
+                order["quantity"] for order in ask_orders
+            ),
+            "bid_order_count": len(bid_orders),
+            "ask_order_count": len(ask_orders),
+        }
+
+    def get_market_imbalance(self):
+        bid_qty = sum(
+            order["quantity"]
+            for orders in self.bids.values()
+            for order in orders
+        )
+        ask_qty = sum(
+            order["quantity"]
+            for orders in self.asks.values()
+            for order in orders
+        )
+        total_qty = bid_qty + ask_qty
+
+        if total_qty == 0:
+            return {
+                "bid_quantity": bid_qty,
+                "ask_quantity": ask_qty,
+                "imbalance": 0.0,
+                "pressure": "EMPTY",
+            }
+
+        imbalance = (bid_qty - ask_qty) / total_qty
+
+        if imbalance > 0.2:
+            pressure = "BUY PRESSURE"
+        elif imbalance < -0.2:
+            pressure = "SELL PRESSURE"
+        else:
+            pressure = "BALANCED"
+
+        return {
+            "bid_quantity": bid_qty,
+            "ask_quantity": ask_qty,
+            "imbalance": imbalance,
+            "pressure": pressure,
+        }
 
     def get_book_state(self):
         bids = []

@@ -3,13 +3,13 @@ import sqlite3
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = PROJECT_ROOT / "trades.db"
+DB_PATH = PROJECT_ROOT / "ledger.db"
 
 
-def trade_writer(queue):
-    """Background process responsible for persistent trade auditing."""
+def trade_writer(queue, db_path=DB_PATH):
+    """Persist execution batches on the supplied queue."""
 
-    connection = sqlite3.connect(DB_PATH)
+    connection = sqlite3.connect(db_path)
 
     connection.execute("PRAGMA journal_mode=WAL")
 

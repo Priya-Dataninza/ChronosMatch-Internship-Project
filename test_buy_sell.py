@@ -1,5 +1,5 @@
 
-from matching_engine_core.order_book import PyOrderBook
+from matching_engine_core.order_book_fallback import PyOrderBook
 
 book = PyOrderBook()
 
