@@ -1,9 +1,8 @@
 
-# order_gateway.py
-
-from order_format import (
+from ipc.shared_buffer import (
     init_ring_buffer,
     get_mmap_instance,
+    buffer_lock,
     HEADER_FORMAT,
     HEADER_SIZE,
     ORDER_FORMAT,
@@ -11,22 +10,23 @@ from order_format import (
     MAX_ORDERS,
 )
 
+MAX_UINT32 = (1 << 32) - 1
+
 init_ring_buffer()
-file_handle, shared_memory = get_mmap_instance(mode="r+b")
+file_handle, shared_memory = get_mmap_instance()
 
 
 def order_id_exists(order_id: int, write_ptr: int, read_ptr: int) -> bool:
     """
-    Check whether the given order ID already exists
-    among orders currently waiting in the ring buffer.
+    Check whether an order ID already exists
+    among orders waiting in the ring buffer.
     """
-
     for pointer in range(read_ptr, write_ptr):
         slot_index = pointer % MAX_ORDERS
         offset = HEADER_SIZE + (slot_index * ORDER_SIZE)
 
-        existing_order = ORDER_FORMAT.unpack(
-            shared_memory[offset:offset + ORDER_SIZE]
+        existing_order = ORDER_FORMAT.unpack_from(
+            shared_memory, offset
         )
 
         if existing_order[0] == order_id:
@@ -42,87 +42,78 @@ def produce_order(
     side: int,
 ) -> bool:
 
-    # Validate unsigned 32-bit integer limits.
-    max_value = (1 << 32) - 1
+    # Validate integer fields.
+    values = (order_id, price, quantity, side)
 
-    if not 0 <= order_id <= max_value:
-        print(
-            f"[REJECTED] Invalid Order #{order_id}: "
-            "Order ID must be between 0 and 4294967295."
-        )
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool)
+        and 0 <= value <= MAX_UINT32
+        for value in values
+    ):
+        print("[REJECTED] Fields must be unsigned 32-bit integers.")
         return False
 
-    if not 1 <= price <= max_value:
-        print(
-            f"[REJECTED] Invalid Order #{order_id}: "
-            "Price must be between 1 and 4294967295."
-        )
+    if price == 0:
+        print("[REJECTED] Price must be positive.")
         return False
 
-    if not 1 <= quantity <= max_value:
-        print(
-            f"[REJECTED] Invalid Order #{order_id}: "
-            "Quantity must be between 1 and 4294967295."
-        )
+    if quantity == 0:
+        print("[REJECTED] Quantity must be positive.")
         return False
 
-    # Validate order side: 1 = BUY, 2 = SELL.
     if side not in (1, 2):
-        print(
-            f"[REJECTED] Invalid Order #{order_id}: "
-            "Side must be 1 (BUY) or 2 (SELL)."
+        print("[REJECTED] Side must be 1 (BUY) or 2 (SELL).")
+        return False
+
+    # Synchronize access to shared memory.
+    with buffer_lock(file_handle):
+
+        write_ptr, read_ptr = HEADER_FORMAT.unpack_from(
+            shared_memory, 0
         )
-        return False
 
-    # Read the ring-buffer pointers.
-    write_ptr, read_ptr = HEADER_FORMAT.unpack(
-        shared_memory[0:HEADER_SIZE]
-    )
+        # Prevent duplicate pending order IDs.
+        if order_id_exists(order_id, write_ptr, read_ptr):
+            print(f"[REJECTED] Duplicate Order ID #{order_id}.")
+            return False
 
-    # Reject duplicate IDs among pending orders.
-    if order_id_exists(order_id, write_ptr, read_ptr):
-        print(
-            f"[REJECTED] Duplicate Order ID #{order_id}: "
-            "An order with this ID is already pending."
+        # Prevent buffer overflow.
+        if write_ptr - read_ptr >= MAX_ORDERS:
+            print("[BUFFER FULL] Order not written.")
+            return False
+
+        # Calculate the ring-buffer slot.
+        slot_index = write_ptr % MAX_ORDERS
+        offset = HEADER_SIZE + slot_index * ORDER_SIZE
+
+        # Write the order directly into shared memory.
+        ORDER_FORMAT.pack_into(
+            shared_memory,
+            offset,
+            order_id,
+            price,
+            quantity,
+            side,
         )
-        return False
 
-    # Prevent buffer overflow.
-    if write_ptr - read_ptr >= MAX_ORDERS:
-        print("[CRITICAL] Buffer Overflow!")
-        return False
+        # Publish the updated write pointer.
+        HEADER_FORMAT.pack_into(
+            shared_memory,
+            0,
+            write_ptr + 1,
+            read_ptr,
+        )
 
-    # Calculate the slot for the new order.
-    slot_index = write_ptr % MAX_ORDERS
-    offset = HEADER_SIZE + (slot_index * ORDER_SIZE)
-
-    # Pack and write the order.
-    shared_memory[offset:offset + ORDER_SIZE] = ORDER_FORMAT.pack(
-        order_id,
-        price,
-        quantity,
-        side,
-    )
-
-    # Advance the write pointer and flush shared memory.
-    new_write_ptr = write_ptr + 1
-    shared_memory[0:HEADER_SIZE] = HEADER_FORMAT.pack(
-        new_write_ptr,
-        read_ptr,
-    )
-    shared_memory.flush()
+        shared_memory.flush()
 
     return True
 
 
 if __name__ == "__main__":
-    print(
-        "[GATEWAY] Active. Enter orders manually to test real-time pipeline."
-    )
-    print(
-        "Format: order_id price quantity side "
-        "(e.g., 101 15000 5 1 for BUY or 102 15050 10 2 for SELL)."
-    )
+
+    print("[GATEWAY] ChronosMatch producer ready.")
+    print("Format: order_id price quantity side")
+    print("Example: 101 15000 5 1 (BUY)")
     print("Type 'exit' to quit.\n")
 
     try:
@@ -133,24 +124,22 @@ if __name__ == "__main__":
                 break
 
             try:
-                oid, prc, qty, side = map(int, user_input.split())
+                oid, price, qty, side = map(
+                    int, user_input.split()
+                )
 
-                if side not in (1, 2):
-                    print("Invalid side! Use 1 for BUY or 2 for SELL.")
-                    continue
-
-                if produce_order(oid, prc, qty, side):
-                    side_name = "BUY" if side == 1 else "SELL"
-                    print(
-                        f" -> Sent {side_name} Order {oid} "
-                        "to ring buffer."
-                    )
+                if produce_order(oid, price, qty, side):
+                    label = "BUY" if side == 1 else "SELL"
+                    print(f"[SENT] {label} order {oid}")
 
             except ValueError:
                 print(
-                    "Invalid input format. "
-                    "Use numbers: order_id price quantity side"
+                    "Enter four integers: "
+                    "order_id price quantity side"
                 )
+
+    except KeyboardInterrupt:
+        print("\n[GATEWAY] Stopping.")
 
     finally:
         shared_memory.close()

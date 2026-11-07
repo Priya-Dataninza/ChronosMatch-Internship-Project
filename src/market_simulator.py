@@ -3,9 +3,10 @@ import argparse
 import asyncio
 import random
 import sys
+import time
+
 from dataclasses import dataclass
 from pathlib import Path
-import time
 
 
 PRICE_SCALE = 100
@@ -27,17 +28,24 @@ class Order:
     timestamp_ns: int
 
 
-def convert_order_for_gateway(order: Order) -> tuple[int, int, int, int]:
-    """Convert an order into the integer format used by the IPC gateway."""
+def convert_order_for_gateway(
+    order: Order,
+) -> tuple[int, int, int, int]:
+    """Convert an order into the integer format used by IPC."""
 
     price_cents = round(order.price * PRICE_SCALE)
     side_code = SIDE_TO_CODE[order.side]
 
-    return order.order_id, price_cents, order.quantity, side_code
+    return (
+        order.order_id,
+        price_cents,
+        order.quantity,
+        side_code,
+    )
 
 
 def send_order_to_gateway(order: Order) -> bool:
-    """Send an order to Member 1's IPC gateway."""
+    """Send a simulated order to the IPC gateway."""
 
     project_root = Path(__file__).resolve().parent.parent
     ipc_dir = str(project_root / "ipc")
@@ -45,16 +53,26 @@ def send_order_to_gateway(order: Order) -> bool:
     if ipc_dir not in sys.path:
         sys.path.insert(0, ipc_dir)
 
-    # Import the gateway only when sending an order.
+    # Import only when an order needs to be sent.
     from order_gateway import produce_order
 
-    order_id, price, quantity, side = convert_order_for_gateway(order)
+    order_id, price, quantity, side = (
+        convert_order_for_gateway(order)
+    )
 
-    return produce_order(order_id, price, quantity, side)
+    return produce_order(
+        order_id,
+        price,
+        quantity,
+        side,
+    )
 
 
-async def generate_orders(total_orders: int = 10, delay: float = 0.5):
-    """Generate mock market orders asynchronously."""
+async def generate_orders(
+    total_orders: int = 10,
+    delay: float = 0.5,
+):
+    """Generate simulated market orders asynchronously."""
 
     if total_orders < 0:
         raise ValueError("total_orders cannot be negative")
@@ -63,6 +81,7 @@ async def generate_orders(total_orders: int = 10, delay: float = 0.5):
         raise ValueError("delay cannot be negative")
 
     for order_id in range(1, total_orders + 1):
+
         order = Order(
             order_id=order_id,
             side=random.choice(["BUY", "SELL"]),
@@ -85,7 +104,7 @@ async def generate_orders(total_orders: int = 10, delay: float = 0.5):
 
 
 async def main():
-    """Run the market simulator from the command line."""
+    """Run the ChronosMatch market simulator."""
 
     parser = argparse.ArgumentParser(
         description="ChronosMatch market simulator"
@@ -95,14 +114,14 @@ async def main():
         "--orders",
         type=int,
         default=10,
-        help="Number of orders to generate (default: 10)",
+        help="Number of orders to generate",
     )
 
     parser.add_argument(
         "--delay",
         type=float,
         default=0.5,
-        help="Delay between orders in seconds (default: 0.5)",
+        help="Delay between orders in seconds",
     )
 
     args = parser.parse_args()
@@ -114,7 +133,11 @@ async def main():
         parser.error("--delay cannot be negative")
 
     try:
-        async for order in generate_orders(args.orders, args.delay):
+        async for order in generate_orders(
+            args.orders,
+            args.delay,
+        ):
+
             try:
                 sent = send_order_to_gateway(order)
 
@@ -134,12 +157,13 @@ async def main():
                 break
 
     finally:
-        # The gateway opens shared memory when first imported.
-        # Close it after the simulator finishes.
+        # Close gateway resources after simulation.
         gateway = sys.modules.get("order_gateway")
+
         if gateway is not None:
             if hasattr(gateway, "shared_memory"):
                 gateway.shared_memory.close()
+
             if hasattr(gateway, "file_handle"):
                 gateway.file_handle.close()
 
