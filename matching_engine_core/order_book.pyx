@@ -6,15 +6,16 @@
 
 from libc.stdlib cimport malloc, free
 from libc.stdint cimport uint64_t, uint32_t, uint8_t
-from libc.stdio cimport printf
 from time import perf_counter_ns
+
 
 # 1 = BUY, 2 = SELL
 cdef enum Side:
     BUY = 1
     SELL = 2
 
-# Statically typed C struct for internal Orders
+
+# Statically typed C struct for internal orders.
 cdef struct Order:
     uint64_t order_id
     uint32_t price
@@ -23,7 +24,8 @@ cdef struct Order:
     Order* next
     Order* prev
 
-# Statically typed C struct for a Price Level (Queue of Orders)
+
+# Each price level contains a FIFO doubly linked list of orders.
 cdef struct PriceLevel:
     uint32_t price
     Order* head
@@ -31,194 +33,240 @@ cdef struct PriceLevel:
     PriceLevel* next
     PriceLevel* prev
 
-# The core Order Book structure
+
+# Bids and asks are maintained as separate sorted linked lists.
 cdef struct OrderBook:
     PriceLevel* best_bid
     PriceLevel* best_ask
-    uint64_t total_orders_processed  # Tracks engine throughput
+    uint64_t total_orders_processed
 
-# Internal helper to create a new order node in memory
-cdef inline Order* create_order(uint64_t order_id, uint32_t price, uint32_t qty, uint8_t side) noexcept nogil:
+
+cdef inline Order* create_order(
+    uint64_t order_id,
+    uint32_t price,
+    uint32_t qty,
+    uint8_t side
+) noexcept nogil:
     cdef Order* ord = <Order*>malloc(sizeof(Order))
+
     if ord == NULL:
         return NULL
+
     ord.order_id = order_id
     ord.price = price
     ord.qty = qty
     ord.side = side
     ord.next = NULL
     ord.prev = NULL
+
     return ord
 
-# Internal helper to append an order node to an existing price level queue
-cdef inline void insert_resting_order(PriceLevel* level, Order* ord) noexcept nogil:
+
+cdef inline void insert_resting_order(
+    PriceLevel* level,
+    Order* ord
+) noexcept nogil:
+    # Append to the tail to preserve time priority (FIFO).
+    ord.next = NULL
+    ord.prev = level.tail
+
     if level.tail == NULL:
         level.head = ord
         level.tail = ord
     else:
         level.tail.next = ord
-        ord.prev = level.tail
         level.tail = ord
 
-# Internal helper to allocate a new price level and insert it sorted into the doubly linked list
-cdef void add_resting_level_and_order(OrderBook* book, uint32_t price, Order* ord, uint8_t side) noexcept nogil:
+
+cdef void add_resting_level_and_order(
+    OrderBook* book,
+    uint32_t price,
+    Order* ord,
+    uint8_t side
+) noexcept nogil:
     cdef PriceLevel* level = <PriceLevel*>malloc(sizeof(PriceLevel))
+    cdef PriceLevel* curr = NULL
+
     if level == NULL:
         free(ord)
         return
-    
+
     level.price = price
     level.head = ord
     level.tail = ord
     level.next = NULL
     level.prev = NULL
 
-    cdef PriceLevel* curr = NULL
-
     if side == BUY:
-        # Bids are sorted descending (highest price first)
+        # Bids: highest price first.
         if book.best_bid == NULL or price > book.best_bid.price:
             level.next = book.best_bid
+
             if book.best_bid != NULL:
                 book.best_bid.prev = level
+
             book.best_bid = level
         else:
             curr = book.best_bid
+
             while curr.next != NULL and curr.next.price > price:
                 curr = curr.next
-            
-            if curr.price == price:
-                free(level)
-                insert_resting_order(curr, ord)
-                return
-                
+
             level.next = curr.next
             level.prev = curr
+
             if curr.next != NULL:
                 curr.next.prev = level
+
             curr.next = level
 
     elif side == SELL:
-        # Asks are sorted ascending (lowest price first)
+        # Asks: lowest price first.
         if book.best_ask == NULL or price < book.best_ask.price:
             level.next = book.best_ask
+
             if book.best_ask != NULL:
                 book.best_ask.prev = level
+
             book.best_ask = level
         else:
             curr = book.best_ask
+
             while curr.next != NULL and curr.next.price < price:
                 curr = curr.next
-            
-            if curr.price == price:
-                free(level)
-                insert_resting_order(curr, ord)
-                return
-                
+
             level.next = curr.next
             level.prev = curr
+
             if curr.next != NULL:
                 curr.next.prev = level
+
             curr.next = level
 
-# Core matching engine loop running entirely WITHOUT the GIL
-cdef void match_order(OrderBook* book, uint64_t order_id, uint32_t price, uint32_t qty, uint8_t side) noexcept nogil:
+
+cdef void match_order(
+    OrderBook* book,
+    uint64_t order_id,
+    uint32_t price,
+    uint32_t qty,
+    uint8_t side
+) noexcept nogil:
     cdef Order* new_ord = NULL
     cdef PriceLevel* current_level = NULL
     cdef Order* resting_ord = NULL
     cdef uint32_t match_qty = 0
 
-    # Increment performance metric
     book.total_orders_processed += 1
 
     if side == BUY:
+        # Incoming BUY matches the cheapest eligible asks first.
         current_level = book.best_ask
-        while current_level != NULL and current_level.price <= price and qty > 0:
+
+        while (
+            current_level != NULL
+            and current_level.price <= price
+            and qty > 0
+        ):
             resting_ord = current_level.head
+
             while resting_ord != NULL and qty > 0:
                 if qty < resting_ord.qty:
                     match_qty = qty
                 else:
                     match_qty = resting_ord.qty
-                
+
                 qty -= match_qty
                 resting_ord.qty -= match_qty
-                
+
                 if resting_ord.qty == 0:
                     current_level.head = resting_ord.next
+
                     if current_level.head != NULL:
                         current_level.head.prev = NULL
                     else:
                         current_level.tail = NULL
-                    
+
                     free(resting_ord)
                     resting_ord = current_level.head
                 else:
                     break
-            
+
             if current_level.head == NULL:
                 book.best_ask = current_level.next
+
                 if book.best_ask != NULL:
                     book.best_ask.prev = NULL
-                free(current_level) # Free the empty price level structure
+
+                free(current_level)
                 current_level = book.best_ask
             else:
                 break
 
     elif side == SELL:
+        # Incoming SELL matches the highest eligible bids first.
         current_level = book.best_bid
-        while current_level != NULL and current_level.price >= price and qty > 0:
+
+        while (
+            current_level != NULL
+            and current_level.price >= price
+            and qty > 0
+        ):
             resting_ord = current_level.head
+
             while resting_ord != NULL and qty > 0:
                 if qty < resting_ord.qty:
                     match_qty = qty
                 else:
                     match_qty = resting_ord.qty
-                
+
                 qty -= match_qty
                 resting_ord.qty -= match_qty
-                
+
                 if resting_ord.qty == 0:
                     current_level.head = resting_ord.next
+
                     if current_level.head != NULL:
                         current_level.head.prev = NULL
                     else:
                         current_level.tail = NULL
+
                     free(resting_ord)
                     resting_ord = current_level.head
                 else:
                     break
-            
+
             if current_level.head == NULL:
                 book.best_bid = current_level.next
+
                 if book.best_bid != NULL:
                     book.best_bid.prev = NULL
-                free(current_level) # Free the empty price level structure
+
+                free(current_level)
                 current_level = book.best_bid
             else:
                 break
 
-    # If volume remains unfilled, add it to the book structure as a resting limit order
+    # Any unfilled quantity becomes a resting limit order.
     if qty > 0:
         new_ord = create_order(order_id, price, qty, side)
+
         if new_ord == NULL:
             return
-        
+
         if side == BUY:
             current_level = book.best_bid
-            while current_level != NULL and current_level.price != price:
-                current_level = current_level.next
         else:
             current_level = book.best_ask
-            while current_level != NULL and current_level.price != price:
-                current_level = current_level.next
+
+        while current_level != NULL and current_level.price != price:
+            current_level = current_level.next
 
         if current_level != NULL:
             insert_resting_order(current_level, new_ord)
         else:
             add_resting_level_and_order(book, price, new_ord, side)
 
-# Python Extension Class Wrapper
+
 cdef class PyOrderBook:
     cdef OrderBook* _book
     cdef uint64_t _last_start_ns
@@ -227,13 +275,14 @@ cdef class PyOrderBook:
     cdef uint64_t _total_latency_ns
     cdef uint64_t _max_latency_ns
     cdef uint64_t _latency_samples
-    
+
     def __cinit__(self):
         self._book = <OrderBook*>malloc(sizeof(OrderBook))
 
         if self._book == NULL:
             raise MemoryError()
 
+        # Initialize the book only after allocation succeeds.
         self._book.best_bid = NULL
         self._book.best_ask = NULL
         self._book.total_orders_processed = 0
@@ -244,7 +293,7 @@ cdef class PyOrderBook:
         self._total_latency_ns = 0
         self._max_latency_ns = 0
         self._latency_samples = 0
-        
+
     def __dealloc__(self):
         cdef PriceLevel* curr_level
         cdef PriceLevel* next_level
@@ -252,31 +301,39 @@ cdef class PyOrderBook:
         cdef Order* next_ord
 
         if self._book != NULL:
-            # Clean up all allocated Bid levels and internal orders
+            # Free all bid levels and their orders.
             curr_level = self._book.best_bid
+
             while curr_level != NULL:
                 next_level = curr_level.next
                 curr_ord = curr_level.head
+
                 while curr_ord != NULL:
                     next_ord = curr_ord.next
                     free(curr_ord)
                     curr_ord = next_ord
+
                 free(curr_level)
                 curr_level = next_level
 
-            # Clean up all allocated Ask levels and internal orders
+            # Free all ask levels and their orders.
             curr_level = self._book.best_ask
+
             while curr_level != NULL:
                 next_level = curr_level.next
                 curr_ord = curr_level.head
+
                 while curr_ord != NULL:
                     next_ord = curr_ord.next
                     free(curr_ord)
                     curr_ord = next_ord
+
                 free(curr_level)
                 curr_level = next_level
 
             free(self._book)
+            self._book = NULL
+
     def process_incoming(
         self,
         uint64_t order_id,
@@ -292,6 +349,7 @@ cdef class PyOrderBook:
 
         self._last_start_ns = perf_counter_ns()
 
+        # The matching loop uses C structs and pointers without the GIL.
         with nogil:
             match_order(
                 self._book,
@@ -315,7 +373,7 @@ cdef class PyOrderBook:
 
     @property
     def metrics(self):
-        avg_latency = 0
+        cdef uint64_t avg_latency = 0
 
         if self._latency_samples > 0:
             avg_latency = (
@@ -332,16 +390,19 @@ cdef class PyOrderBook:
             "max_latency_ns": self._max_latency_ns,
             "latency_samples": self._latency_samples,
         }
-    
+
     def get_book_state(self):
         cdef PriceLevel* level
         cdef Order* order
+
         bids = []
         asks = []
 
         level = self._book.best_bid
+
         while level != NULL:
             order = level.head
+
             while order != NULL:
                 bids.append({
                     "order_id": order.order_id,
@@ -349,11 +410,14 @@ cdef class PyOrderBook:
                     "quantity": order.qty
                 })
                 order = order.next
+
             level = level.next
 
         level = self._book.best_ask
+
         while level != NULL:
             order = level.head
+
             while order != NULL:
                 asks.append({
                     "order_id": order.order_id,
@@ -361,6 +425,7 @@ cdef class PyOrderBook:
                     "quantity": order.qty
                 })
                 order = order.next
+
             level = level.next
 
         return {"bids": bids, "asks": asks}
@@ -371,11 +436,10 @@ cdef class PyOrderBook:
 
         cdef uint64_t total_bid_qty = 0
         cdef uint64_t total_ask_qty = 0
-
         cdef uint64_t bid_order_count = 0
         cdef uint64_t ask_order_count = 0
 
-        # Calculate BUY-side liquidity
+        # Calculate BUY-side liquidity.
         level = self._book.best_bid
 
         while level != NULL:
@@ -388,7 +452,7 @@ cdef class PyOrderBook:
 
             level = level.next
 
-        # Calculate SELL-side liquidity
+        # Calculate SELL-side liquidity.
         level = self._book.best_ask
 
         while level != NULL:
@@ -411,31 +475,36 @@ cdef class PyOrderBook:
     def get_market_imbalance(self):
         cdef PriceLevel* level
         cdef Order* order
-
-        cdef unsigned long long bid_qty = 0
-        cdef unsigned long long ask_qty = 0
+        cdef uint64_t bid_qty = 0
+        cdef uint64_t ask_qty = 0
+        cdef uint64_t total_qty
+        cdef double imbalance
 
         level = self._book.best_bid
 
         while level != NULL:
             order = level.head
+
             while order != NULL:
                 bid_qty += order.qty
                 order = order.next
+
             level = level.next
 
         level = self._book.best_ask
 
         while level != NULL:
             order = level.head
+
             while order != NULL:
                 ask_qty += order.qty
                 order = order.next
+
             level = level.next
 
-        total = bid_qty + ask_qty
+        total_qty = bid_qty + ask_qty
 
-        if total == 0:
+        if total_qty == 0:
             return {
                 "bid_quantity": bid_qty,
                 "ask_quantity": ask_qty,
@@ -443,7 +512,11 @@ cdef class PyOrderBook:
                 "pressure": "EMPTY"
             }
 
-        imbalance = (bid_qty - ask_qty) / total
+        # Cast before subtraction to avoid unsigned underflow.
+        imbalance = (
+            (<double>bid_qty - <double>ask_qty)
+            / <double>total_qty
+        )
 
         if imbalance > 0.2:
             pressure = "BUY PRESSURE"
@@ -460,6 +533,5 @@ cdef class PyOrderBook:
         }
 
 
-##for running
-
-##python setup.py build_ext --inplace --force 
+# Build from the project root:
+# python setup.py build_ext --inplace --force
