@@ -4,8 +4,9 @@
 # cython: nonecheck=False
 # cython: cdivision=True
 
-from libc.stdlib cimport malloc, free
+from libc.stdlib cimport malloc, realloc, free
 from libc.stdint cimport uint64_t, uint32_t, uint8_t
+from threading import Lock
 from time import perf_counter_ns
 
 
@@ -32,6 +33,14 @@ cdef struct PriceLevel:
     Order* tail
     PriceLevel* next
     PriceLevel* prev
+
+
+cdef struct Trade:
+    uint64_t maker_order_id
+    uint64_t taker_order_id
+    uint32_t price
+    uint32_t quantity
+    uint8_t side
 
 
 # Bids and asks are maintained as separate sorted linked lists.
@@ -78,7 +87,50 @@ cdef inline void insert_resting_order(
         level.tail = ord
 
 
-cdef void add_resting_level_and_order(
+cdef inline int append_trade(
+    Trade** trades,
+    uint64_t* capacity,
+    uint64_t* count,
+    uint64_t maker_order_id,
+    uint64_t taker_order_id,
+    uint32_t price,
+    uint32_t quantity,
+    uint8_t side
+) noexcept nogil:
+    cdef uint64_t new_capacity
+    cdef Trade* new_trades
+
+    if count[0] == capacity[0]:
+        if capacity[0] == 0:
+            new_capacity = 8
+        else:
+            new_capacity = capacity[0] * 2
+
+        if new_capacity < capacity[0]:
+            return 0
+
+        new_trades = <Trade*>realloc(
+            trades[0],
+            new_capacity * sizeof(Trade)
+        )
+
+        if new_trades == NULL:
+            return 0
+
+        trades[0] = new_trades
+        capacity[0] = new_capacity
+
+    trades[0][count[0]].maker_order_id = maker_order_id
+    trades[0][count[0]].taker_order_id = taker_order_id
+    trades[0][count[0]].price = price
+    trades[0][count[0]].quantity = quantity
+    trades[0][count[0]].side = side
+    count[0] += 1
+
+    return 1
+
+
+cdef int add_resting_level_and_order(
     OrderBook* book,
     uint32_t price,
     Order* ord,
@@ -88,8 +140,7 @@ cdef void add_resting_level_and_order(
     cdef PriceLevel* curr = NULL
 
     if level == NULL:
-        free(ord)
-        return
+        return 0
 
     level.price = price
     level.head = ord
@@ -143,19 +194,25 @@ cdef void add_resting_level_and_order(
 
             curr.next = level
 
+    return 1
 
-cdef void match_order(
+
+cdef int match_order(
     OrderBook* book,
     uint64_t order_id,
     uint32_t price,
     uint32_t qty,
-    uint8_t side
+    uint8_t side,
+    Trade** trades,
+    uint64_t* trade_capacity,
+    uint64_t* trade_count
 ) noexcept nogil:
     cdef Order* new_ord = NULL
     cdef PriceLevel* current_level = NULL
     cdef Order* resting_ord = NULL
     cdef uint32_t match_qty = 0
 
+    trade_count[0] = 0
     book.total_orders_processed += 1
 
     if side == BUY:
@@ -174,6 +231,18 @@ cdef void match_order(
                     match_qty = qty
                 else:
                     match_qty = resting_ord.qty
+
+                if not append_trade(
+                    trades,
+                    trade_capacity,
+                    trade_count,
+                    resting_ord.order_id,
+                    order_id,
+                    current_level.price,
+                    match_qty,
+                    side
+                ):
+                    return 0
 
                 qty -= match_qty
                 resting_ord.qty -= match_qty
@@ -219,6 +288,18 @@ cdef void match_order(
                 else:
                     match_qty = resting_ord.qty
 
+                if not append_trade(
+                    trades,
+                    trade_capacity,
+                    trade_count,
+                    resting_ord.order_id,
+                    order_id,
+                    current_level.price,
+                    match_qty,
+                    side
+                ):
+                    return 0
+
                 qty -= match_qty
                 resting_ord.qty -= match_qty
 
@@ -251,7 +332,7 @@ cdef void match_order(
         new_ord = create_order(order_id, price, qty, side)
 
         if new_ord == NULL:
-            return
+            return 0
 
         if side == BUY:
             current_level = book.best_bid
@@ -264,11 +345,18 @@ cdef void match_order(
         if current_level != NULL:
             insert_resting_order(current_level, new_ord)
         else:
-            add_resting_level_and_order(book, price, new_ord, side)
+            if not add_resting_level_and_order(
+                book, price, new_ord, side
+            ):
+                free(new_ord)
+                return 0
+
+    return 1
 
 
 cdef class PyOrderBook:
     cdef OrderBook* _book
+    cdef object _process_lock
     cdef uint64_t _last_start_ns
     cdef uint64_t _last_end_ns
     cdef uint64_t _last_latency_ns
@@ -286,6 +374,7 @@ cdef class PyOrderBook:
         self._book.best_bid = NULL
         self._book.best_ask = NULL
         self._book.total_orders_processed = 0
+        self._process_lock = Lock()
 
         self._last_start_ns = 0
         self._last_end_ns = 0
@@ -341,35 +430,69 @@ cdef class PyOrderBook:
         uint32_t qty,
         uint8_t side
     ):
+        cdef Trade* trade_buffer = NULL
+        cdef uint64_t trade_capacity = 0
+        cdef uint64_t trade_count = 0
+        cdef uint64_t trade_index
+        cdef int success
+        trades = []
+
         if side not in (BUY, SELL):
             raise ValueError("side must be BUY (1) or SELL (2)")
 
         if price == 0 or qty == 0:
             raise ValueError("price and quantity must be positive")
 
-        self._last_start_ns = perf_counter_ns()
+        with self._process_lock:
+            self._last_start_ns = perf_counter_ns()
 
-        # The matching loop uses C structs and pointers without the GIL.
-        with nogil:
-            match_order(
-                self._book,
-                order_id,
-                price,
-                qty,
-                side
+            with nogil:
+                success = match_order(
+                    self._book,
+                    order_id,
+                    price,
+                    qty,
+                    side,
+                    &trade_buffer,
+                    &trade_capacity,
+                    &trade_count
+                )
+
+            self._last_end_ns = perf_counter_ns()
+            self._last_latency_ns = (
+                self._last_end_ns - self._last_start_ns
             )
+            self._total_latency_ns += self._last_latency_ns
+            self._latency_samples += 1
 
-        self._last_end_ns = perf_counter_ns()
+            if self._last_latency_ns > self._max_latency_ns:
+                self._max_latency_ns = self._last_latency_ns
 
-        self._last_latency_ns = (
-            self._last_end_ns - self._last_start_ns
-        )
+            if not success:
+                if trade_buffer != NULL:
+                    free(trade_buffer)
+                raise MemoryError("Unable to store the resting order")
 
-        self._total_latency_ns += self._last_latency_ns
-        self._latency_samples += 1
+            try:
+                for trade_index in range(trade_count):
+                    trades.append({
+                        "maker_order_id": (
+                            trade_buffer[trade_index].maker_order_id
+                        ),
+                        "taker_order_id": (
+                            trade_buffer[trade_index].taker_order_id
+                        ),
+                        "price": trade_buffer[trade_index].price,
+                        "quantity": (
+                            trade_buffer[trade_index].quantity
+                        ),
+                        "side": trade_buffer[trade_index].side,
+                    })
+            finally:
+                if trade_buffer != NULL:
+                    free(trade_buffer)
 
-        if self._last_latency_ns > self._max_latency_ns:
-            self._max_latency_ns = self._last_latency_ns
+        return trades
 
     @property
     def metrics(self):

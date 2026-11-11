@@ -105,6 +105,7 @@ def consumer_worker(total_orders, result_queue):
     try:
         while processed + invalid < total_orders:
             got_order = False
+            order = None
 
             with buffer_lock(file_handle):
                 write_ptr, read_ptr = HEADER_FORMAT.unpack_from(
@@ -115,27 +116,26 @@ def consumer_worker(total_orders, result_queue):
                     slot = read_ptr % MAX_ORDERS
                     offset = HEADER_SIZE + slot * ORDER_SIZE
 
-                    order_id, price, quantity, side = (
-                        ORDER_FORMAT.unpack_from(mem, offset)
-                    )
-
-                    if (
-                        price > 0
-                        and quantity > 0
-                        and side in (1, 2)
-                    ):
-                        book.process_incoming(
-                            order_id, price, quantity, side
-                        )
-                        processed += 1
-                    else:
-                        invalid += 1
-
+                    order = ORDER_FORMAT.unpack_from(mem, offset)
                     HEADER_FORMAT.pack_into(
                         mem, 0, write_ptr, read_ptr + 1
                     )
 
                     got_order = True
+
+            if order is not None:
+                order_id, price, quantity, side = order
+                if (
+                    price > 0
+                    and quantity > 0
+                    and side in (1, 2)
+                ):
+                    book.process_incoming(
+                        order_id, price, quantity, side
+                    )
+                    processed += 1
+                else:
+                    invalid += 1
 
             if not got_order:
                 time.sleep(0.00001)

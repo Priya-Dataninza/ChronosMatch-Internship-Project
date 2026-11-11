@@ -1,5 +1,4 @@
 import curses
-import os
 import queue
 import random
 import sqlite3
@@ -12,28 +11,38 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+LEDGER_DB_PATH = PROJECT_ROOT / "ledger.db"
  
 PRICE_SCALE = 100  # the simulator sends price x 100 (99.75 -> 9975)
 WHALE_QTY = 90     # simulator quantities are 1-100, so 90+ counts as a whale
 BUY, SELL = 1, 2
  
  
-# ---------- 1. SQLite ledger (separate process) ----------
-def ledger_writer(q, db_path="ledger.db"):
-    """Saves every processed order. Gets whole batches, so it is fast."""
+# ---------- 1. SQLite trade ledger (separate process) ----------
+def ledger_writer(q, db_path=LEDGER_DB_PATH):
+    """Persist execution batches without blocking the matching worker."""
     con = sqlite3.connect(db_path)
-    con.execute(
-        "CREATE TABLE IF NOT EXISTS orders("
-        "order_id INTEGER, side INTEGER, price INTEGER, "
-        "qty INTEGER, latency_ns INTEGER)"
-    )
-    while True:
-        batch = q.get()
-        if batch is None:  # stop signal
-            break
-        con.executemany("INSERT INTO orders VALUES (?,?,?,?,?)", batch)
-        con.commit()
-    con.close()
+    try:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS executed_trades("
+            "maker_order_id INTEGER, taker_order_id INTEGER, "
+            "price INTEGER, quantity INTEGER, side INTEGER, "
+            "executed_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+        )
+        while True:
+            batch = q.get()
+            if batch is None:  # stop signal
+                break
+            if batch:
+                con.executemany(
+                    "INSERT INTO executed_trades "
+                    "(maker_order_id, taker_order_id, price, quantity, side) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    batch,
+                )
+                con.commit()
+    finally:
+        con.close()
  
  
 # ---------- 2. Latency statistics ----------
@@ -71,52 +80,82 @@ def summarize_book(book):
  
 def engine_worker(out_q, stop):
     """LIVE: read orders from shared.bin, send them to the real engine, time each."""
-    # The engine still has a printf() that would wreck the curses screen.
-    # Send this process's C-level output to NUL. (Ask the team to remove printf.)
-    os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
- 
     from ipc.shared_buffer import (
         init_ring_buffer, get_mmap_instance, buffer_lock,
         HEADER_FORMAT, HEADER_SIZE, ORDER_FORMAT, ORDER_SIZE, MAX_ORDERS,
     )
-    from matching_engine_core.order_book import PyOrderBook
+    from matching_engine_core.engine_loader import PyOrderBook
  
     init_ring_buffer()
     file_handle, mem = get_mmap_instance()
     book = PyOrderBook()
     clock = time.perf_counter_ns
-    batch, processed, backlog = [], 0, 0
+    batch, trade_batch, whale_batch, processed, backlog = [], [], [], 0, 0
     book_info = (None, None, 0, 0)
     last_send = last_book = time.time()
  
     try:
         while not stop.is_set():
-            got = False
+            record = None
             with buffer_lock(file_handle):
                 write_ptr, read_ptr = HEADER_FORMAT.unpack_from(mem, 0)
                 if read_ptr < write_ptr:
                     offset = HEADER_SIZE + (read_ptr % MAX_ORDERS) * ORDER_SIZE
-                    oid, price, qty, side = ORDER_FORMAT.unpack_from(mem, offset)
-                    if side in (BUY, SELL) and price > 0 and qty > 0:
-                        t0 = clock()
-                        book.process_incoming(oid, price, qty, side)
-                        ns = clock() - t0  # time for ONE order inside the engine
-                        batch.append((oid, side, price, qty, ns))
-                        processed += 1
+                    record = ORDER_FORMAT.unpack_from(mem, offset)
                     HEADER_FORMAT.pack_into(mem, 0, write_ptr, read_ptr + 1)
-                    got = True
+                got = record is not None
                 backlog = write_ptr - read_ptr - (1 if got else 0)
- 
+
+            if record is not None:
+                oid, price, qty, side = record
+                if side in (BUY, SELL) and price > 0 and qty > 0:
+                    t0 = clock()
+                    trades = book.process_incoming(
+                        oid, price, qty, side
+                    )
+                    ns = clock() - t0
+                    batch.append((oid, side, price, qty, ns))
+                    if clears_multiple_levels(qty, trades):
+                        whale_batch.append(oid)
+                    trade_batch.extend(
+                        (
+                            trade["maker_order_id"],
+                            trade["taker_order_id"],
+                            trade["price"],
+                            trade["quantity"],
+                            trade["side"],
+                        )
+                        for trade in trades
+                    )
+                    processed += 1
+
             now = time.time()
             if now - last_book > 0.5:  # not every order: reading the book is slow
                 book_info, last_book = summarize_book(book), now
             if now - last_send > 0.1:
-                out_q.put({"orders": batch, "processed": processed,
-                           "backlog": backlog, "book": book_info})
-                batch, last_send = [], now
+                out_q.put({
+                    "orders": batch,
+                    "trades": trade_batch,
+                    "whales": whale_batch,
+                    "processed": processed,
+                    "backlog": backlog,
+                    "book": book_info,
+                })
+                batch, trade_batch, whale_batch, last_send = (
+                    [], [], [], now
+                )
             if not got:
                 time.sleep(0.0001)
     finally:
+        if batch or trade_batch or whale_batch:
+            out_q.put({
+                "orders": batch,
+                "trades": trade_batch,
+                "whales": whale_batch,
+                "processed": processed,
+                "backlog": backlog,
+                "book": book_info,
+            })
         mem.close()
         file_handle.close()
  
@@ -134,8 +173,18 @@ def fake_worker(out_q, stop):
                           random.randint(8_000, 45_000)))
         mid = batch[-1][2]
         bid = mid - random.randint(1, 10)
-        out_q.put({"orders": batch, "processed": n, "backlog": 0,
-                   "book": (bid, bid + random.randint(2, 20), 5, 5)})
+        demo_whales = [
+            order[0] for order in batch
+            if order[3] >= WHALE_QTY and random.random() < 0.25
+        ]
+        out_q.put({
+            "orders": batch,
+            "processed": n,
+            "backlog": 0,
+            "trades": [],
+            "whales": demo_whales,
+            "book": (bid, bid + random.randint(2, 20), 5, 5),
+        })
         time.sleep(0.1)
  
  
@@ -163,8 +212,15 @@ def latency_graph(values, width=40):
  
 def price_text(p):
     return f"{p / PRICE_SCALE:8.2f}" if p is not None else "      --"
- 
- 
+
+
+def clears_multiple_levels(quantity, trades):
+    return (
+        quantity >= WHALE_QTY
+        and len({trade["price"] for trade in trades}) > 1
+    )
+
+
 def dashboard(stdscr, in_q, ledger_q, demo):
     curses.curs_set(0)
     stdscr.nodelay(True)
@@ -185,12 +241,14 @@ def dashboard(stdscr, in_q, ledger_q, demo):
             while True:
                 msg = in_q.get_nowait()
                 total, backlog, book = msg["processed"], msg["backlog"], msg["book"]
-                if msg["orders"]:
-                    ledger_q.put(msg["orders"])  # one message per batch
+                if msg["trades"]:
+                    ledger_q.put(msg["trades"])
+                whale_ids = set(msg.get("whales", ()))
                 for order in msg["orders"]:
                     stats.add(order[4])
-                    recent.append(order)
-                    if order[3] >= WHALE_QTY:
+                    is_whale = order[0] in whale_ids
+                    recent.append((*order, is_whale))
+                    if is_whale:
                         whale_until = time.time() + 2
         except queue.Empty:
             pass
@@ -228,11 +286,11 @@ def dashboard(stdscr, in_q, ledger_q, demo):
             put(stdscr, 7, 40, "*** WHALE ORDER! ***", red | curses.A_BOLD)
  
         put(stdscr, 11, 0, "Recent orders (red = WHALE):")
-        for i, (oid, side, price, qty, ns) in enumerate(reversed(recent)):
+        for i, (oid, side, price, qty, ns, is_whale) in enumerate(reversed(recent)):
             line = (f"#{oid:<8} {'BUY ' if side == BUY else 'SELL'} "
                     f"{price / PRICE_SCALE:8.2f} x {qty:<5} {ns / 1000:6.1f}us")
             put(stdscr, 12 + i, 0, line,
-                red | curses.A_BOLD if qty >= WHALE_QTY else 0)
+                red | curses.A_BOLD if is_whale else 0)
  
         put(stdscr, 23, 0, "Press 'q' to quit")
         stdscr.refresh()
@@ -242,17 +300,6 @@ def dashboard(stdscr, in_q, ledger_q, demo):
 # ---------- 5. Start everything ----------
 def main():
     demo = "--demo" in sys.argv
-    if not demo:
-        try:
-            import matching_engine_core.order_book  # noqa: F401
-        except ImportError as err:
-            print(f"Cannot load the engine: {err}")
-            print("Build it first, from the project folder:")
-            print("    python setup.py build_ext --inplace")
-            print("Or test the screen without it:")
-            print("    python dashboard/latency_dashboard.py --demo")
-            return
- 
     in_q, ledger_q, stop = Queue(), Queue(), Event()
     worker = Process(target=fake_worker if demo else engine_worker,
                      args=(in_q, stop))
@@ -266,9 +313,17 @@ def main():
         worker.join(timeout=2)
         if worker.is_alive():
             worker.terminate()
+            worker.join()
+        try:
+            while True:
+                message = in_q.get_nowait()
+                if message["trades"]:
+                    ledger_q.put(message["trades"])
+        except queue.Empty:
+            pass
         ledger_q.put(None)
         writer.join()
-    print("Done. Orders saved in ledger.db")
+    print("Done. Executed trades saved in ledger.db")
  
  
 if __name__ == "__main__":  # this guard is required on Windows

@@ -54,6 +54,21 @@ class TestRingBuffer(unittest.TestCase):
     def test_empty_buffer_returns_none(self):
         self.assertIsNone(self.buffer.read_order())
 
+    def test_stats_reflect_buffer_usage(self):
+        self.buffer.write_order(self.make_order())
+
+        self.assertEqual(
+            self.buffer.get_stats(),
+            {
+                "capacity": 2,
+                "used": 1,
+                "free": 1,
+                "usage_percent": 50.0,
+                "read_index": 0,
+                "write_index": 1,
+            },
+        )
+
     def test_full_buffer_raises_error(self):
         self.buffer.write_order(self.make_order(order_id=1))
         self.buffer.write_order(self.make_order(order_id=2))

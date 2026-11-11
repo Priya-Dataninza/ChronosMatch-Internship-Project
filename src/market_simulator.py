@@ -2,14 +2,13 @@
 import argparse
 import asyncio
 import random
-import sys
 import time
 
 from dataclasses import dataclass
-from pathlib import Path
 
 
 PRICE_SCALE = 100
+BATCH_SIZE = 256
 
 SIDE_TO_CODE = {
     "BUY": 1,
@@ -33,8 +32,12 @@ def convert_order_for_gateway(
 ) -> tuple[int, int, int, int]:
     """Convert an order into the integer format used by IPC."""
 
+    try:
+        side_code = SIDE_TO_CODE[order.side.upper()]
+    except (AttributeError, KeyError) as error:
+        raise ValueError("side must be BUY or SELL") from error
+
     price_cents = round(order.price * PRICE_SCALE)
-    side_code = SIDE_TO_CODE[order.side]
 
     return (
         order.order_id,
@@ -47,14 +50,7 @@ def convert_order_for_gateway(
 def send_order_to_gateway(order: Order) -> bool:
     """Send a simulated order to the IPC gateway."""
 
-    project_root = Path(__file__).resolve().parent.parent
-    ipc_dir = str(project_root / "ipc")
-
-    if ipc_dir not in sys.path:
-        sys.path.insert(0, ipc_dir)
-
-    # Import only when an order needs to be sent.
-    from order_gateway import produce_order
+    from ipc.order_gateway import produce_order
 
     order_id, price, quantity, side = (
         convert_order_for_gateway(order)
@@ -68,6 +64,17 @@ def send_order_to_gateway(order: Order) -> bool:
     )
 
 
+def send_orders_to_gateway(orders: list[Order]) -> bool:
+    """Submit a batch atomically to the shared IPC queue."""
+
+    from ipc.order_gateway import produce_orders
+
+    return produce_orders([
+        convert_order_for_gateway(order)
+        for order in orders
+    ])
+
+
 async def generate_orders(
     total_orders: int = 10,
     delay: float = 0.5,
@@ -77,8 +84,8 @@ async def generate_orders(
     if total_orders < 0:
         raise ValueError("total_orders cannot be negative")
 
-    if delay < 0:
-        raise ValueError("delay cannot be negative")
+    if not 0 <= delay < float("inf"):
+        raise ValueError("delay must be a finite non-negative number")
 
     for order_id in range(1, total_orders + 1):
 
@@ -90,17 +97,9 @@ async def generate_orders(
             timestamp_ns=time.perf_counter_ns(),
         )
 
-        print(
-            f"Order {order.order_id}: {order.side} | "
-            f"Price: {order.price:.2f} | "
-            f"Quantity: {order.quantity} | "
-            f"Timestamp: {order.timestamp_ns}"
-        )
-
         yield order
 
-        if order_id < total_orders:
-            await asyncio.sleep(delay)
+        await asyncio.sleep(delay)
 
 
 async def main():
@@ -120,8 +119,13 @@ async def main():
     parser.add_argument(
         "--delay",
         type=float,
-        default=0.5,
+        default=0,
         help="Delay between orders in seconds",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print every generated order (reduces throughput)",
     )
 
     args = parser.parse_args()
@@ -129,36 +133,72 @@ async def main():
     if args.orders < 0:
         parser.error("--orders cannot be negative")
 
-    if args.delay < 0:
-        parser.error("--delay cannot be negative")
+    if not 0 <= args.delay < float("inf"):
+        parser.error("--delay must be finite and non-negative")
+
+    submitted = 0
+    rejected = 0
+    generated = 0
+    batch = []
+    batch_size = BATCH_SIZE if args.delay == 0 else 1
 
     try:
         async for order in generate_orders(
             args.orders,
             args.delay,
         ):
+            generated += 1
+            if args.verbose:
+                print(
+                    f"Order {order.order_id}: {order.side} | "
+                    f"Price: {order.price:.2f} | "
+                    f"Quantity: {order.quantity} | "
+                    f"Timestamp: {order.timestamp_ns}"
+                )
+
+            batch.append(order)
+            if len(batch) < batch_size:
+                continue
 
             try:
-                sent = send_order_to_gateway(order)
-
-                if sent:
-                    print(
-                        f"[GATEWAY] Order {order.order_id} "
-                        "sent successfully."
-                    )
-                else:
-                    print(
-                        f"[GATEWAY] Order {order.order_id} "
-                        "was rejected."
-                    )
-
+                sent = send_orders_to_gateway(batch)
             except (ImportError, OSError) as error:
                 print(f"[GATEWAY ERROR] {error}")
+                rejected += len(batch)
+                batch.clear()
                 break
+
+            if sent:
+                submitted += len(batch)
+                if args.verbose:
+                    print(f"[GATEWAY] Submitted {len(batch)} orders.")
+                batch.clear()
+            else:
+                rejected += len(batch)
+                batch.clear()
+                print("[GATEWAY] Batch rejected; stopping the simulator.")
+                break
+
+        if batch:
+            try:
+                sent = send_orders_to_gateway(batch)
+            except (ImportError, OSError) as error:
+                print(f"[GATEWAY ERROR] {error}")
+                rejected += len(batch)
+            else:
+                if sent:
+                    submitted += len(batch)
+                    if args.verbose:
+                        print(f"[GATEWAY] Submitted {len(batch)} orders.")
+                else:
+                    rejected += len(batch)
+                    print("[GATEWAY] Batch rejected.")
 
     finally:
         # Close gateway resources after simulation.
-        gateway = sys.modules.get("order_gateway")
+        import sys
+
+        gateway = sys.modules.get("ipc.order_gateway")
 
         if gateway is not None:
             if hasattr(gateway, "shared_memory"):
@@ -166,6 +206,11 @@ async def main():
 
             if hasattr(gateway, "file_handle"):
                 gateway.file_handle.close()
+
+    print(
+        f"Orders generated: {generated}; "
+        f"submitted: {submitted}; rejected: {rejected}"
+    )
 
 
 if __name__ == "__main__":

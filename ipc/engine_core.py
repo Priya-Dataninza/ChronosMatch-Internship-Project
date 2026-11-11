@@ -1,7 +1,9 @@
 
+import os
+from queue import Queue
+from threading import Thread
 import time
-
-from matching_engine_core import order_book
+from time import perf_counter_ns
 
 from ipc.shared_buffer import (
     init_ring_buffer,
@@ -19,10 +21,13 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+STOP_FILE = os.environ.get("CHRONOS_STOP_FILE")
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
     
-from matching_engine_core.order_book import PyOrderBook
+from matching_engine_core.engine_loader import PyOrderBook
+from ipc.engine_status import publish_engine_status
+from ipc.trade_ledger import trade_writer
 
 init_ring_buffer()
 file_handle, shared_memory = get_mmap_instance()
@@ -32,58 +37,111 @@ def run_engine():
     print("[ENGINE] ChronosMatch core online.")
 
     order_book = PyOrderBook()
+    audit_queue = Queue()
+    audit_writer = Thread(
+        target=trade_writer,
+        args=(audit_queue,),
+        name="chronosmatch-trade-ledger",
+    )
+    audit_writer.start()
     processed = 0
+    executed_trades = 0
+    total_latency_ns = 0
+    last_latency_ns = None
+    max_latency_ns = None
+    last_status_update = 0.0
+    engine_type = (
+        "cython"
+        if type(order_book).__module__ == "matching_engine_core.order_book"
+        else "python-fallback"
+    )
     log_each_order = False  # Set False for throughput testing.
 
+    def publish_status(status):
+        publish_engine_status(
+            audit_queue,
+            status,
+            engine_type=engine_type,
+            orders_processed=processed,
+            trades_executed=executed_trades,
+            last_latency_ns=last_latency_ns,
+            average_latency_ns=(
+                total_latency_ns // processed if processed else None
+            ),
+            max_latency_ns=max_latency_ns,
+        )
+
     try:
+        publish_status("running")
+
         while True:
-            if processed >= 1_000_000:
-                break
+            order = None
+
             with buffer_lock(file_handle):
                 write_ptr, read_ptr = HEADER_FORMAT.unpack_from(
                     shared_memory, 0
                 )
 
-                if read_ptr >= write_ptr:
-                    order = None
-                else:
+                if read_ptr < write_ptr:
                     slot_index = read_ptr % MAX_ORDERS
                     offset = HEADER_SIZE + slot_index * ORDER_SIZE
 
                     order = ORDER_FORMAT.unpack_from(
                         shared_memory, offset
                     )
-
-                    order_id, price, qty, side = order
-
-                    if side not in (1, 2) or price == 0 or qty == 0:
-                        print(
-                            f"[ENGINE] Invalid record at slot {slot_index}; "
-                            "discarding it."
-                        )
-                    else:
-                        # Process before freeing the slot.
-                        order_book.process_incoming(
-                            order_id, price, qty, side
-                        )
-                        processed += 1
-
-                        if log_each_order:
-                            label = "BUY" if side == 1 else "SELL"
-                            print(
-                                f"[ENGINE] ID={order_id} "
-                                f"{label} price={price} qty={qty}"
-                            )
-
-                    # Consume this logical position exactly once
-                    # under the shared lock.
                     HEADER_FORMAT.pack_into(
                         shared_memory, 0,
                         write_ptr, read_ptr + 1
                     )
 
             if order is None:
+                now = time.monotonic()
+                if STOP_FILE and Path(STOP_FILE).exists():
+                    break
+                if now - last_status_update >= 0.25:
+                    publish_status("running")
+                    last_status_update = now
                 time.sleep(0.0001)
+                continue
+
+            order_id, price, qty, side = order
+
+            if side not in (1, 2) or price == 0 or qty == 0:
+                print(
+                    f"[ENGINE] Invalid record at slot "
+                    f"{read_ptr % MAX_ORDERS}; discarding it."
+                )
+                continue
+
+            start_ns = perf_counter_ns()
+            trades = order_book.process_incoming(
+                order_id, price, qty, side
+            )
+            last_latency_ns = perf_counter_ns() - start_ns
+            total_latency_ns += last_latency_ns
+            max_latency_ns = (
+                last_latency_ns
+                if max_latency_ns is None
+                else max(max_latency_ns, last_latency_ns)
+            )
+            executed_trades += len(trades)
+            if trades:
+                audit_queue.put(trades)
+            processed += 1
+
+            now = time.monotonic()
+            if now - last_status_update >= 0.25:
+                if STOP_FILE and Path(STOP_FILE).exists():
+                    break
+                publish_status("running")
+                last_status_update = now
+
+            if log_each_order:
+                label = "BUY" if side == 1 else "SELL"
+                print(
+                    f"[ENGINE] ID={order_id} "
+                    f"{label} price={price} qty={qty}"
+                )
 
     except KeyboardInterrupt:
         print("\n[ENGINE] Shutting down.")
@@ -91,11 +149,18 @@ def run_engine():
     finally:
         print(f"[ENGINE] Orders processed: {processed}")
         print(f"[ENGINE] Metrics: {order_book.metrics}")
+        try:
+            publish_status("stopped")
+        finally:
+            audit_queue.put(None)
+            audit_writer.join()
+
+    return order_book
 
 
 if __name__ == "__main__":
     try:
-        run_engine()
+        order_book = run_engine()
         print("\n[MARKET ANALYSIS]")
 
         market = order_book.get_market_imbalance()

@@ -229,6 +229,18 @@ class RingBuffer:
                 timestamp_ns=timestamp_ns,
             )
 
+    def get_stats(self):
+        with self._locked():
+            read_idx, write_idx, count = self._header()
+            return {
+                "capacity": self.capacity,
+                "used": count,
+                "free": self.capacity - count,
+                "usage_percent": round(count / self.capacity * 100, 2),
+                "read_index": read_idx,
+                "write_index": write_idx,
+            }
+
     def close(self):
         if hasattr(self, "memory"):
             self.memory.close()

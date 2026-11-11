@@ -2,17 +2,19 @@ import mmap
 import os
 import struct
 from contextlib import contextmanager
+from pathlib import Path
 
-##header will store read and write index of the ring buffer.
+# Header stores the monotonically increasing read and write positions.
 HEADER_FORMAT = struct.Struct("<QQ")
 HEADER_SIZE = HEADER_FORMAT.size
 
 ORDER_FORMAT = struct.Struct("<IIII")
 ORDER_SIZE = ORDER_FORMAT.size
 
-MAX_ORDERS = 1000000 # Use 2 for initial tests; later change to 100_0000.
+MAX_ORDERS = 1_000_000
 FILE_SIZE = HEADER_SIZE + ORDER_SIZE * MAX_ORDERS
-FILE_NAME = "shared.bin"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FILE_NAME = PROJECT_ROOT / "shared.bin"
 
 
 def init_ring_buffer():
@@ -29,14 +31,6 @@ def init_ring_buffer():
             "Stop both processes and reset the buffer."
         )
 
-def reset_ring_buffer():
-    with open(FILE_NAME, "w+b") as f:
-        f.truncate(FILE_SIZE)
-        f.write(HEADER_FORMAT.pack(0, 0))
-
-    print("[SYSTEM] Ring buffer reset successfully.")
-
-
 def get_mmap_instance(mode="r+b"):
     f = open(FILE_NAME, mode)
 
@@ -51,7 +45,7 @@ def get_mmap_instance(mode="r+b"):
             mem = mmap.mmap(
                 f.fileno(), FILE_SIZE,
                 access=access,
-                tagname="chronosmatch_mmap",
+                tagname=None,
             )
         else:
             mem = mmap.mmap(
