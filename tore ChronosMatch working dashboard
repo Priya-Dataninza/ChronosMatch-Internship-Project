@@ -1,0 +1,75 @@
+dashboard/latency_dashboard.py:10: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:15: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:19: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:20: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:46: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:47: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:52: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:55: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:63: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:64: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:79: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:80: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:88: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:96: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:161: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:162: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:189: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:190: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:201: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:202: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:211: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:212: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:231: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:238: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:255: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:262: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:276: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:287: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:294: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:298: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:299: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:327: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:328: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:331: trailing whitespace.
+[32m+[m[41m [m
+dashboard/latency_dashboard.py:331: new blank line at EOF.
+ipc/engine_core.py:28: trailing whitespace.
+[32m+[m[41m    [m
+tests/test_matching.py:8: trailing whitespace.
+[32m+[m[41m    [m
+tests/test_order_book_cases.py:7: trailing whitespace.
+[32m+[m[41m    [m

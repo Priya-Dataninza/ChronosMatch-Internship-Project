@@ -11,7 +11,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{% static 'webdashboard/dashboard.css' %}">
 </head>
-<body>
+<body data-status-url="{% url 'webdashboard:status' %}">
   <div class="shell">
     <aside class="sidebar">
       <a class="brand" href="{% url 'webdashboard:dashboard' %}" aria-label="ChronosMatch home">
@@ -21,6 +21,7 @@
       <div class="side-label">WORKSPACE</div>
       <a class="nav-link active" href="#overview"><span class="nav-icon">◫</span> Overview</a>
       <a class="nav-link" href="#order-entry"><span class="nav-icon">↗</span> Order entry</a>
+      <a class="nav-link" href="#order-book"><span class="nav-icon">▤</span> Order book</a>
       <a class="nav-link" href="#executions"><span class="nav-icon">≋</span> Executions</a>
       <div class="sidebar-bottom">
         <div class="engine-card">
@@ -52,6 +53,22 @@
           <div class="live-badge"><span class="pulse-dot"></span> LIVE MONITORING</div>
         </div>
 
+        <section class="panel engine-control-panel" aria-label="Engine controls">
+          <div>
+            <div class="eyebrow">DEMO CONTROLS</div>
+            <p class="control-description">Start the engine, then send 200 randomized limit orders as 100 crossing BUY/SELL pairs. Unfilled quantity rests in the book; latency measures local matching calls, not exchange round trips.</p>
+          </div>
+          <div class="engine-control-actions" id="engine-controls"
+               data-engine-on-url="{% url 'webdashboard:engine_on' %}"
+               data-engine-off-url="{% url 'webdashboard:engine_off' %}"
+               data-simulate-url="{% url 'webdashboard:simulate_bulk' %}">
+            <button class="engine-button engine-on" id="engine-on" type="button" disabled>Engine on</button>
+            <button class="engine-button engine-off" id="engine-off" type="button" disabled>Engine off</button>
+            <button class="engine-button simulate-button" id="simulate-bulk" type="button" disabled>Queue 200-order demo</button>
+          </div>
+          <div class="control-message" id="control-message" role="status" aria-live="polite"></div>
+        </section>
+
         {% if messages %}
           <div class="messages" role="status">
             {% for message in messages %}
@@ -62,7 +79,7 @@
 
         <div class="metric-grid">
           <article class="metric-card">
-            <div class="metric-label">ORDERS IN QUEUE <span class="metric-symbol">↗</span></div>
+            <div class="metric-label">UNPROCESSED ORDERS <span class="metric-symbol">↗</span></div>
             <div class="metric-value" id="queued-orders">—</div>
             <div class="metric-foot"><span class="metric-live">●</span> Shared mmap ring buffer</div>
           </article>
@@ -83,11 +100,38 @@
             <div class="metric-foot" id="engine-latency-foot">Engine not running</div>
           </article>
           <article class="metric-card">
+            <div class="metric-label">PROCESSING RATE <span class="metric-symbol">↗</span></div>
+            <div class="metric-value"><span id="orders-per-second">—</span><small>orders/s</small></div>
+            <div class="metric-foot">Live engine throughput</div>
+          </article>
+          <article class="metric-card">
             <div class="metric-label">TRADE LEDGER <span class="metric-symbol">▣</span></div>
             <div class="metric-value metric-status" id="ledger-status">WAITING</div>
             <div class="metric-foot">SQLite execution audit</div>
           </article>
         </div>
+        <section class="panel latency-panel" aria-labelledby="latency-heading">
+          <div class="panel-heading execution-heading">
+            <div><div class="eyebrow">ENGINE PERFORMANCE</div><h2 id="latency-heading">Matching latency</h2></div>
+            <span class="execution-note">SAMPLED EVERY 2 SECONDS</span>
+          </div>
+          <svg class="latency-chart" id="latency-chart" viewBox="0 0 640 220" role="img" aria-label="Live matching latency and engine average in microseconds">
+            <line class="chart-grid" x1="52" y1="35" x2="625" y2="35"></line>
+            <line class="chart-grid" x1="52" y1="85" x2="625" y2="85"></line>
+            <line class="chart-grid" x1="52" y1="135" x2="625" y2="135"></line>
+            <line class="chart-grid" x1="52" y1="185" x2="625" y2="185"></line>
+            <text class="chart-axis" x="4" y="39" id="latency-axis-max">—</text>
+            <text class="chart-axis" x="4" y="139" id="latency-axis-mid">—</text>
+            <text class="chart-axis" x="4" y="189">0 µs</text>
+            <polyline class="latency-line latency-line-average" id="latency-average-line" points=""></polyline>
+            <polyline class="latency-line latency-line-current" id="latency-current-line" points=""></polyline>
+          </svg>
+          <div class="chart-legend">
+            <span><i class="legend-current"></i> Per-order latency</span>
+            <span><i class="legend-average"></i> Engine average</span>
+            <span id="latency-chart-note" role="status">Waiting for engine samples.</span>
+          </div>
+        </section>
         <div class="engine-guidance" id="engine-guidance">
           Matching engine is stopped. Start the complete demo with
           <code>python manage.py runchronos</code>.
@@ -99,7 +143,7 @@
               <div><div class="eyebrow">MANUAL TICKET</div><h2>Submit an order</h2></div>
               <span class="panel-icon">↗</span>
             </div>
-            <p class="panel-description">Orders are written directly to the shared-memory queue.</p>
+            <p class="panel-description">This queue is a brief handoff to the engine. Unmatched quantity appears in the Live order book after processing.</p>
             <form method="post" action="{% url 'webdashboard:submit_order' %}" class="order-form">
               {% csrf_token %}
               <label for="order-id">Order ID</label>
@@ -144,6 +188,38 @@
             <div class="refresh-note"><span class="refresh-icon">⟳</span> Refreshes automatically every 2 seconds</div>
           </section>
         </div>
+
+        <section class="panel order-book-panel" id="order-book">
+          <div class="panel-heading execution-heading">
+            <div><div class="eyebrow">RESTING LIQUIDITY</div><h2>Live order book</h2></div>
+            <span class="execution-note"><span class="pulse-dot"></span> TOP 10 PRICE LEVELS · AUTO-REFRESH</span>
+          </div>
+          <div class="book-summary">
+            <div><span>RESTING BID ORDERS</span><strong id="bid-order-count">—</strong><small>Quantity <b id="bid-total-quantity">—</b></small></div>
+            <div><span>RESTING ASK ORDERS</span><strong id="ask-order-count">—</strong><small>Quantity <b id="ask-total-quantity">—</b></small></div>
+            <p id="book-summary-note">Waiting for engine data.</p>
+          </div>
+          <div class="order-book-grid">
+            <div class="order-book-side">
+              <h3 class="side-buy">Bids <span>BUY</span></h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>PRICE</th><th>QUANTITY</th><th>ORDERS</th></tr></thead>
+                  <tbody id="bids-body"><tr><td class="empty-state" colspan="3">No resting bids</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="order-book-side">
+              <h3 class="side-sell">Asks <span>SELL</span></h3>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>PRICE</th><th>QUANTITY</th><th>ORDERS</th></tr></thead>
+                  <tbody id="asks-body"><tr><td class="empty-state" colspan="3">No resting asks</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <section class="panel executions-panel" id="executions">
           <div class="panel-heading execution-heading">

@@ -22,6 +22,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STOP_FILE = os.environ.get("CHRONOS_STOP_FILE")
+READY_FILE = os.environ.get("CHRONOS_READY_FILE")
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
     
@@ -58,6 +59,8 @@ def run_engine():
     log_each_order = False  # Set False for throughput testing.
 
     def publish_status(status):
+        order_book_depth = order_book.get_market_depth()
+        order_book_depth["summary"] = order_book.get_book_summary()
         publish_engine_status(
             audit_queue,
             status,
@@ -69,10 +72,16 @@ def run_engine():
                 total_latency_ns // processed if processed else None
             ),
             max_latency_ns=max_latency_ns,
+            order_book=order_book_depth,
         )
 
     try:
         publish_status("running")
+        if READY_FILE:
+            ready_file = Path(READY_FILE)
+            temporary_file = ready_file.with_name(ready_file.name + ".tmp")
+            temporary_file.write_text(str(os.getpid()), encoding="ascii")
+            os.replace(temporary_file, ready_file)
 
         while True:
             order = None

@@ -43,6 +43,18 @@ class TestEngineStatus(unittest.TestCase):
                 last_latency_ns=900,
                 average_latency_ns=1200,
                 max_latency_ns=2400,
+                order_book={
+                    "bids": [
+                        {"price": 10000, "quantity": 5, "order_count": 2}
+                    ],
+                    "asks": [],
+                    "summary": {
+                        "total_bid_quantity": 5,
+                        "total_ask_quantity": 0,
+                        "bid_order_count": 2,
+                        "ask_order_count": 0,
+                    },
+                },
             )
 
             trade_writer(ItemsQueue([*queue.items, None]), db_path)
@@ -51,6 +63,43 @@ class TestEngineStatus(unittest.TestCase):
         self.assertEqual(status["status"], "running")
         self.assertEqual(status["average_latency_ns"], 1200)
         self.assertEqual(status["orders_processed"], 12)
+        self.assertEqual(
+            status["order_book"]["bids"][0]["order_count"],
+            2,
+        )
+        self.assertEqual(status["order_book"]["summary"]["bid_order_count"], 2)
+
+    def test_writer_migrates_existing_status_table_for_book_depth(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "ledger.db"
+            connection = sqlite3.connect(db_path)
+            connection.execute("""
+                CREATE TABLE engine_status (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    status TEXT NOT NULL,
+                    pid INTEGER,
+                    updated_at_ns INTEGER NOT NULL,
+                    engine_type TEXT,
+                    orders_processed INTEGER NOT NULL,
+                    trades_executed INTEGER NOT NULL,
+                    last_latency_ns INTEGER,
+                    average_latency_ns INTEGER,
+                    max_latency_ns INTEGER
+                )
+            """)
+            connection.commit()
+            connection.close()
+
+            queue = StatusQueue()
+            publish_engine_status(
+                queue,
+                "running",
+                order_book={"bids": [], "asks": []},
+            )
+            trade_writer(ItemsQueue([*queue.items, None]), db_path)
+            status = read_engine_status(db_path)
+
+        self.assertEqual(status["order_book"], {"bids": [], "asks": []})
 
     def test_old_running_heartbeat_is_marked_stale(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1,3 +1,4 @@
+import random
 import sqlite3
 from pathlib import Path
 
@@ -14,10 +15,17 @@ from ipc.shared_buffer import (
     init_ring_buffer,
 )
 from ipc.engine_status import read_engine_status
+from ipc.engine_supervisor import (
+    is_engine_managed,
+    start_engine,
+    stop_engine,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LEDGER_PATH = PROJECT_ROOT / "ledger.db"
+MAX_UINT32 = (1 << 32) - 1
+DEMO_ORDER_COUNT = 200
 
 
 def _queue_status():
@@ -110,8 +118,126 @@ def status(request):
         "status": "online",
         "queue": queue_status,
         "engine": engine_status,
+        "engine_managed": is_engine_managed(),
         "ledger_status": ledger_status,
         "trades": trades,
+    })
+
+
+@require_POST
+def engine_on(request):
+    try:
+        result = start_engine()
+        engine_status = read_engine_status()
+    except RuntimeError as error:
+        return JsonResponse({"error": str(error)}, status=409)
+    except (OSError, sqlite3.Error) as error:
+        return JsonResponse({"error": str(error)}, status=503)
+
+    message = (
+        f"Engine started (PID {result['pid']})."
+        if result["started"]
+        else f"Engine is already running (PID {result['pid']})."
+    )
+    return JsonResponse({
+        "message": message,
+        "engine": engine_status,
+        "engine_managed": is_engine_managed(),
+    })
+
+
+@require_POST
+def engine_off(request):
+    try:
+        result = stop_engine()
+        engine_status = read_engine_status()
+    except RuntimeError as error:
+        return JsonResponse({"error": str(error)}, status=409)
+    except (OSError, sqlite3.Error) as error:
+        return JsonResponse({"error": str(error)}, status=503)
+
+    message = "Engine stopped." if result["stopped"] else "Engine is already stopped."
+    return JsonResponse({
+        "message": message,
+        "engine": engine_status,
+        "engine_managed": is_engine_managed(),
+    })
+
+
+def _random_crossing_orders(engine_status):
+    book = engine_status.get("order_book", {})
+    bids = book.get("bids", [])
+    asks = book.get("asks", [])
+    best_bid = bids[0]["price"] if bids else None
+    best_ask = asks[0]["price"] if asks else None
+
+    if best_bid is not None and best_ask is not None:
+        reference_price = (best_bid + best_ask) // 2
+    else:
+        reference_price = best_bid or best_ask or 10_000
+    reference_price = min(max(reference_price, 51), MAX_UINT32 - 51)
+
+    random_source = random.SystemRandom()
+    first_order_id = random_source.randint(
+        1, MAX_UINT32 - DEMO_ORDER_COUNT
+    )
+    orders = []
+    for pair_index in range(DEMO_ORDER_COUNT // 2):
+        buy_price = reference_price + random_source.randint(1, 50)
+        sell_price = reference_price - random_source.randint(1, 50)
+        orders.append((
+            first_order_id + pair_index * 2,
+            buy_price,
+            random_source.randint(1, 10),
+            1,
+        ))
+        orders.append((
+            first_order_id + pair_index * 2 + 1,
+            sell_price,
+            random_source.randint(1, 10),
+            2,
+        ))
+    return orders
+
+
+@require_POST
+def simulate_bulk(request):
+    try:
+        engine_status = read_engine_status()
+    except sqlite3.Error as error:
+        return JsonResponse({"error": str(error)}, status=503)
+
+    if engine_status["status"] != "running":
+        return JsonResponse(
+            {"error": "Start the engine before running the 200-order demo."},
+            status=409,
+        )
+
+    try:
+        from ipc.order_gateway import produce_orders
+
+        accepted = produce_orders(_random_crossing_orders(engine_status))
+    except (OSError, ValueError) as error:
+        return JsonResponse({"error": str(error)}, status=503)
+
+    if not accepted:
+        return JsonResponse(
+            {
+                "error": (
+                    "The 200-order batch was rejected. Check queue capacity "
+                    "and try again."
+                )
+            },
+            status=409,
+        )
+
+    return JsonResponse({
+        "message": (
+            "Queued 200 randomized orders as 100 crossing BUY/SELL pairs. "
+            "Fills appear as the engine processes the queue."
+        ),
+        "orders_submitted": DEMO_ORDER_COUNT,
+        "pairs": DEMO_ORDER_COUNT // 2,
     })
 
 
@@ -146,7 +272,9 @@ def submit_order(request):
     if accepted:
         messages.success(
             request,
-            f"{side_label} order #{order_id} queued successfully.",
+            f"{side_label} order #{order_id} queued successfully. "
+            "Any unfilled quantity will appear in the Live order book "
+            "after the engine processes it.",
         )
     else:
         messages.error(

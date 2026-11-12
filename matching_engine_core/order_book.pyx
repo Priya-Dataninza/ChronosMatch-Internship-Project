@@ -655,6 +655,53 @@ cdef class PyOrderBook:
             "pressure": pressure
         }
 
+    def get_market_depth(self):
+        cdef PriceLevel* level
+        cdef Order* order
+        cdef uint64_t quantity
+        cdef uint64_t order_count
+        cdef int depth
+        bids = []
+        asks = []
+
+        level = self._book.best_bid
+        depth = 0
+        while level != NULL and depth < 10:
+            quantity = 0
+            order_count = 0
+            order = level.head
+            while order != NULL:
+                quantity += order.qty
+                order_count += 1
+                order = order.next
+            bids.append({
+                "price": level.price,
+                "quantity": quantity,
+                "order_count": order_count
+            })
+            depth += 1
+            level = level.next
+
+        level = self._book.best_ask
+        depth = 0
+        while level != NULL and depth < 10:
+            quantity = 0
+            order_count = 0
+            order = level.head
+            while order != NULL:
+                quantity += order.qty
+                order_count += 1
+                order = order.next
+            asks.append({
+                "price": level.price,
+                "quantity": quantity,
+                "order_count": order_count
+            })
+            depth += 1
+            level = level.next
+
+        return {"bids": bids, "asks": asks}
+
 
 # Build from the project root:
 # python setup.py build_ext --inplace --force

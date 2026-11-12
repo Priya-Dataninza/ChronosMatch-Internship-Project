@@ -35,9 +35,20 @@ def trade_writer(queue, db_path=DB_PATH):
             trades_executed INTEGER NOT NULL,
             last_latency_ns INTEGER,
             average_latency_ns INTEGER,
-            max_latency_ns INTEGER
+            max_latency_ns INTEGER,
+            order_book_json TEXT NOT NULL DEFAULT '{"bids":[],"asks":[]}'
         )
     """)
+    status_columns = {
+        row[1] for row in connection.execute(
+            "PRAGMA table_info(engine_status)"
+        )
+    }
+    if "order_book_json" not in status_columns:
+        connection.execute(
+            "ALTER TABLE engine_status ADD COLUMN order_book_json TEXT "
+            "NOT NULL DEFAULT '{\"bids\":[],\"asks\":[]}'"
+        )
 
     connection.commit()
 
@@ -55,9 +66,9 @@ def trade_writer(queue, db_path=DB_PATH):
                     INSERT OR REPLACE INTO engine_status (
                         id, status, pid, updated_at_ns, engine_type,
                         orders_processed, trades_executed, last_latency_ns,
-                        average_latency_ns, max_latency_ns
+                        average_latency_ns, max_latency_ns, order_book_json
                     )
-                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     batch["status"],
                     batch["pid"],
@@ -68,6 +79,7 @@ def trade_writer(queue, db_path=DB_PATH):
                     batch["last_latency_ns"],
                     batch["average_latency_ns"],
                     batch["max_latency_ns"],
+                    batch["order_book_json"],
                 ))
                 connection.commit()
                 continue

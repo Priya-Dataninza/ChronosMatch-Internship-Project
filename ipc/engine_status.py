@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import time
@@ -21,6 +22,9 @@ def publish_engine_status(status_queue, status, **metrics):
         "last_latency_ns": metrics.get("last_latency_ns"),
         "average_latency_ns": metrics.get("average_latency_ns"),
         "max_latency_ns": metrics.get("max_latency_ns"),
+        "order_book_json": json.dumps(
+            metrics.get("order_book", {"bids": [], "asks": []})
+        ),
     })
 
 
@@ -33,6 +37,7 @@ def read_engine_status(db_path=DB_PATH, now_ns=None):
         "last_latency_ns": None,
         "average_latency_ns": None,
         "max_latency_ns": None,
+        "order_book": {"bids": [], "asks": []},
     }
 
     if not Path(db_path).exists():
@@ -48,16 +53,28 @@ def read_engine_status(db_path=DB_PATH, now_ns=None):
         if table_exists is None:
             return stopped
 
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(engine_status)"
+            )
+        }
+        order_book_column = (
+            ", order_book_json" if "order_book_json" in columns else ""
+        )
         row = connection.execute(
             "SELECT status, pid, updated_at_ns, engine_type, "
             "orders_processed, trades_executed, last_latency_ns, "
-            "average_latency_ns, max_latency_ns "
-            "FROM engine_status WHERE id=1"
+            "average_latency_ns, max_latency_ns"
+            f"{order_book_column} FROM engine_status WHERE id=1"
         ).fetchone()
         if row is None:
             return stopped
 
         payload = dict(row)
+        payload["order_book"] = json.loads(
+            payload.pop("order_book_json", '{"bids":[],"asks":[]}')
+        )
         current_time_ns = time.monotonic_ns() if now_ns is None else now_ns
         if (
             payload["status"] == "running"

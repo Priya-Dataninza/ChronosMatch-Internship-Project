@@ -99,7 +99,8 @@ async def generate_orders(
 
         yield order
 
-        await asyncio.sleep(delay)
+        if delay:
+            await asyncio.sleep(delay)
 
 
 async def main():
@@ -127,6 +128,12 @@ async def main():
         action="store_true",
         help="Print every generated order (reduces throughput)",
     )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=100_000,
+        help="Print progress after this many submitted orders",
+    )
 
     args = parser.parse_args()
 
@@ -135,12 +142,29 @@ async def main():
 
     if not 0 <= args.delay < float("inf"):
         parser.error("--delay must be finite and non-negative")
+    if args.progress_every <= 0:
+        parser.error("--progress-every must be positive")
 
     submitted = 0
     rejected = 0
     generated = 0
     batch = []
     batch_size = BATCH_SIZE if args.delay == 0 else 1
+    start_time = time.perf_counter()
+    next_progress = args.progress_every
+
+    def report_progress():
+        nonlocal next_progress
+        if submitted >= next_progress or submitted == args.orders:
+            elapsed = time.perf_counter() - start_time
+            rate = submitted / elapsed if elapsed else 0
+            print(
+                f"[PROGRESS] {submitted:,}/{args.orders:,} orders "
+                f"submitted | {rate:,.0f} orders/s | {elapsed:.1f}s"
+            )
+            next_progress = (
+                submitted // args.progress_every + 1
+            ) * args.progress_every
 
     try:
         async for order in generate_orders(
@@ -173,6 +197,7 @@ async def main():
                 if args.verbose:
                     print(f"[GATEWAY] Submitted {len(batch)} orders.")
                 batch.clear()
+                report_progress()
             else:
                 rejected += len(batch)
                 batch.clear()
@@ -190,6 +215,7 @@ async def main():
                     submitted += len(batch)
                     if args.verbose:
                         print(f"[GATEWAY] Submitted {len(batch)} orders.")
+                    report_progress()
                 else:
                     rejected += len(batch)
                     print("[GATEWAY] Batch rejected.")
@@ -207,9 +233,12 @@ async def main():
             if hasattr(gateway, "file_handle"):
                 gateway.file_handle.close()
 
+    elapsed = time.perf_counter() - start_time
+    rate = submitted / elapsed if elapsed else 0
     print(
         f"Orders generated: {generated}; "
-        f"submitted: {submitted}; rejected: {rejected}"
+        f"submitted: {submitted}; rejected: {rejected}; "
+        f"elapsed: {elapsed:.2f}s; throughput: {rate:,.0f} orders/s"
     )
 
 

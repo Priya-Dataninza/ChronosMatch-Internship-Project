@@ -163,3 +163,22 @@ class PyOrderBook:
             asks.extend(self.asks[price])
 
         return {"bids": bids, "asks": asks}
+
+    def get_market_depth(self):
+        bids = [
+            {
+                "price": price,
+                "quantity": sum(order["quantity"] for order in self.bids[price]),
+                "order_count": len(self.bids[price]),
+            }
+            for price in sorted(self.bids, reverse=True)[:10]
+        ]
+        asks = [
+            {
+                "price": price,
+                "quantity": sum(order["quantity"] for order in self.asks[price]),
+                "order_count": len(self.asks[price]),
+            }
+            for price in sorted(self.asks)[:10]
+        ]
+        return {"bids": bids, "asks": asks}

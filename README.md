@@ -6,6 +6,51 @@ asyncio market simulator, a terminal dashboard, and asynchronous SQLite
 trade auditing. It is not connected to a real exchange and is not production
 trading software.
 
+## Demo overview
+
+Start the web demo from the project root:
+
+```powershell
+python manage.py runchronos
+```
+
+Open `http://127.0.0.1:8000/`. The page provides engine controls, a manual
+limit-order ticket, a 200-order crossing demo, a live order book, recent
+executions, queue health, and matching-latency charts.
+
+### Order flow
+
+```mermaid
+flowchart LR
+    A["Manual ticket, demo button, or simulator"] --> B["Gateway validates order"]
+    B --> C["shared.bin memory-mapped queue"]
+    C --> D["Engine consumes order"]
+    D --> E["Order book matches by price-time priority"]
+    E -->|"Fill records"| F["Async SQLite trade ledger"]
+    E -->|"Unfilled quantity"| G["Resting order book"]
+    F --> H["Dashboard: recent executions"]
+    G --> I["Dashboard: live order book"]
+```
+
+### What the latency chart measures
+
+```mermaid
+flowchart LR
+    A["Order leaves queue"] --> B["Start timer"]
+    subgraph Measured["Measured matching call"]
+        B --> C["order_book.process_incoming"]
+        C --> D["Stop timer"]
+    end
+    D --> E["Last, average, and max latency"]
+    E --> F["Engine status API"]
+    F --> G["Dashboard cards and chart"]
+```
+
+The timer covers the local matching-engine call only. Queue waiting, order
+generation, SQLite writing, browser refresh, and network or exchange
+round-trip time are not included. The browser's processing-rate figure is a
+separate orders-per-second estimate based on successive engine status polls.
+
 ## Architecture
 
 The simulator submits integer orders to `ipc.order_gateway`. The gateway and
@@ -62,12 +107,23 @@ python manage.py runchronos
 ```
 
 Open `http://127.0.0.1:8000/`. The page refreshes queue depth, engine status,
-average/last/maximum match latency, and recent audited fills automatically.
+average/last/maximum match latency, the top 10 aggregated resting bid/ask
+price levels, and recent audited fills automatically.
 Submit manual BUY/SELL limit orders from the order ticket. Stop the combined
 demo with `Ctrl+C`; the engine writes its final metrics and drains its audit
 queue before exiting. To run the web server separately, use
 `python manage.py runserver` and run `python -m ipc.engine_core` in another
 terminal.
+
+The web dashboard also provides Engine on/off controls and a one-shot
+200-order demo button. Start the engine before queuing the demo batch; it
+generates 100 randomized crossing BUY/SELL pairs so the matching engine can
+produce fills. The batch is queued behind any existing orders, and the page
+shows fills only after they are processed. Live bid/ask order totals and a
+two-minute sampled latency chart help explain the matching flow during a demo.
+Use `python manage.py runchronos` when you want the dashboard to manage the
+engine lifecycle; an engine started independently from another terminal can
+only be stopped from that terminal.
 
 The web server and engine both use the project-root `shared.bin`.
 The development server is intended for local demos only; `DEBUG=True`, the
@@ -84,14 +140,16 @@ python dashboard/latency_dashboard.py
 In another terminal, generate and submit orders:
 
 ```powershell
-python -m src.main --orders 10000 --delay 0
+python -m src.main --orders 1000000 --delay 0 --progress-every 100000
 ```
 
-`--delay 0` generates cooperative batches of up to 256 orders. Add `--verbose`
-to print every order; per-order console output reduces throughput. To run the
-engine without the dashboard, use `python -m ipc.engine_core` in one terminal
-and the simulator command in another. Do not start both consumers against
-the same queue at once.
+`--delay 0` submits batches of up to 256 orders. Add `--verbose`
+to print every order; per-order console output reduces throughput. The
+simulator reports submitted orders and producer throughput; the web dashboard
+shows engine processing rate. Submitted orders are not the same as executed
+trades. To run the engine without the dashboard, use
+`python -m ipc.engine_core` in one terminal and the simulator command in
+another. Do not start both consumers against the same queue at once.
 
 To check the dashboard without starting the engine or simulator:
 

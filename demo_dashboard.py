@@ -6,10 +6,8 @@ from pathlib import Path
 from tkinter import ttk, messagebox
 
 ROOT = Path(__file__).resolve().parent
-IPC_DIR = ROOT / "ipc"
-sys.path.insert(0, str(IPC_DIR))
 
-import order_gateway as gateway
+from ipc import order_gateway as gateway
 
 
 class ChronosMatchDashboard:

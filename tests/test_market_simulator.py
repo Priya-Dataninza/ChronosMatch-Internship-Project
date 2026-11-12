@@ -2,6 +2,7 @@
 import asyncio
 import unittest
 from types import ModuleType
+from unittest.mock import AsyncMock
 from unittest.mock import Mock, patch
 
 from src.market_simulator import (
@@ -86,6 +87,19 @@ class TestMarketSimulator(unittest.TestCase):
                 orders.append(order)
 
             self.assertEqual(orders, [])
+
+        asyncio.run(run_test())
+
+    def test_zero_delay_does_not_suspend_for_each_order(self):
+        async def run_test():
+            with patch(
+                "src.market_simulator.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as sleep:
+                async for _ in generate_orders(3, delay=0):
+                    pass
+
+            sleep.assert_not_awaited()
 
         asyncio.run(run_test())
 
